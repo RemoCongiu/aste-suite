@@ -480,19 +480,9 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
         "note_investitore": _post_process_detail_text(lettura_investitore.get("note_investitore")),
         "rischi_legali": _post_process_detail_text(lettura_investitore.get("rischi_legali")),
         "rischi_urbanistici": _post_process_detail_text(lettura_investitore.get("rischi_urbanistici")),
-        "formalita_pregiudizievoli_commento": _post_process_detail_text(lettura_investitore.get("formalita_pregiudizievoli_commento")),
+        "formalita_pregiudizievoli_commento": _post_process_detail_text(
+            lettura_investitore.get("formalita_pregiudizievoli_commento")
+        ),
     }
 
-    return {
-        "data": normalized,
-        "prompt": {
-            "system": system_prompt.strip(),
-            "user": user_prompt.strip(),
-            "input_excerpt": trimmed_text,
-        },
-        "raw_response": raw_text,
-    }
-
-
-def analyze_perizia_text(text: str) -> dict[str, Any]:
-    return analyze_perizia_text_debug(text)["data"]
+    return normalized

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.ai_analyzer import MODEL_NAME, analyze_perizia_text_debug
+from app.ai_analyzer import MODEL_NAME, analyze_perizia_text
 from app.db import get_asta, update_asta_fields
 from app.ocr_text import extract_text_from_pdf_ocr
 from app.services_parsing import (
@@ -1040,10 +1040,6 @@ def analyze_perizia_for_asta(asta_id: int):
         "ai_result_json": json.dumps(ai_data, ensure_ascii=False, indent=2),
         "ai_summary": _first_non_empty(ai_data.get("riassunto_breve"), ai_data.get("sintesi")),
         "ai_model": MODEL_NAME,
-        "ai_prompt_text": json.dumps(ai_prompt_data, ensure_ascii=False, indent=2) if ai_prompt_data else None,
-        "ai_raw_response": ai_raw_response,
-        "avviso_parsed_json": json.dumps(avviso_fields, ensure_ascii=False, indent=2) if avviso_fields else None,
-        "perizia_parsed_json": json.dumps(perizia_struct, ensure_ascii=False, indent=2) if perizia_struct else None,
         "perizia_status": f"text_extracted:{perizia_source}" if perizia_source else "text_extracted",
         "perizia_error": None,
 
