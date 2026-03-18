@@ -674,11 +674,47 @@ def _build_ai_analysis_input(perizia_text: str, asta, avviso_fields: dict) -> st
 
 
 def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rilancio_minimo) -> str | None:
+    analisi_qualitativa = ai_data.get("analisi_qualitativa") or {}
     criticita = _ensure_list(ai_data.get("criticita_principali"))
     costi = _ensure_list(ai_data.get("costi_probabili"))
     attenzioni = _ensure_list(ai_data.get("punti_di_attenzione_investitore"))
 
     blocks = []
+
+    section_titles = {
+        "descrizione_immobile": "Descrizione immobile",
+        "stato_manutentivo": "Stato manutentivo",
+        "urbanistica_catasto": "Urbanistica e catasto",
+        "abusi_difformita_sanabilita": "Abusi / difformità / sanabilità",
+        "pregiudizievoli": "Pregiudizievoli",
+        "occupazione_liberazione": "Occupazione e liberazione",
+    }
+
+    for section_name, section_title in section_titles.items():
+        section = analisi_qualitativa.get(section_name)
+        if not isinstance(section, dict):
+            continue
+
+        section_parts = []
+        fatto_documentale = _norm_multiline(section.get("fatto_documentale"))
+        analisi_professionale = _norm_multiline(section.get("analisi_professionale"))
+        rischio = _norm_multiline(section.get("rischio"))
+        impatto_operativo = _norm_multiline(section.get("impatto_operativo"))
+        azione = _norm_multiline(section.get("azione_consigliata"))
+
+        if fatto_documentale:
+            section_parts.append("Fatto documentale:\n" + fatto_documentale)
+        if analisi_professionale:
+            section_parts.append("Analisi professionale:\n" + analisi_professionale)
+        if rischio:
+            section_parts.append("Rischio:\n" + rischio)
+        if impatto_operativo:
+            section_parts.append("Impatto operativo:\n" + impatto_operativo)
+        if azione:
+            section_parts.append("Azione consigliata:\n" + azione)
+
+        if section_parts:
+            blocks.append(section_title + ":\n" + _join_paragraphs(section_parts))
 
     if criticita:
         blocks.append("Criticità principali:\n" + _join_bullets(criticita))
