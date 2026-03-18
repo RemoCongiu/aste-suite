@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 
 MODEL_NAME = os.getenv("OPENAI_ASTE_MODEL", "gpt-4.1-mini")
@@ -73,10 +74,16 @@ KEY_SECTION_PATTERNS = [
 ]
 
 
-def _client() -> OpenAI:
+def _client() -> "OpenAI":
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("Variabile OPENAI_API_KEY non impostata.")
+
+    try:
+        from openai import OpenAI
+    except ModuleNotFoundError as e:
+        raise RuntimeError("Pacchetto openai non installato.") from e
+
     return OpenAI(api_key=api_key)
 
 
