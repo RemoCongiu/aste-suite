@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.ai_analyzer import analyze_perizia_text
+from app.ai_analyzer import AIAnalyzerError, MODEL_NAME, analyze_perizia_text_debug
 from app.db import get_asta, update_asta_fields
 from app.ocr_text import extract_text_from_pdf_ocr
-from app.pdf_text import extract_text_from_pdf
+from app.services_ai_input import prepare_avviso_text_for_ai, prepare_perizia_text_for_ai
 from app.services_parsing import (
     clean_text_block,
     clean_tribunale_name,
@@ -20,6 +21,8 @@ from app.services_parsing import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+MIN_TEXT_FOR_ANALYSIS = 900
 
 ANALYSIS_JOBS: dict[int, dict] = {}
 
@@ -475,10 +478,23 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
         text = (diag.get("text") or "").strip()
         quality = diag.get("quality")
 
-        if text and quality == "good":
+        # MOD: testo troppo corto => qualità insufficiente per analisi affidabile.
+        if text and quality == "good" and len(text) >= MIN_TEXT_FOR_ANALYSIS:
             return text, "pypdf", diagnostics
+
+        if not text:
+            logger.warning("Nessun testo estratto da pypdf: %s", pdf_path)
+        elif len(text) < MIN_TEXT_FOR_ANALYSIS:
+            logger.warning(
+                "Testo corto da pypdf (%s chars), forzo OCR: %s",
+                len(text),
+                pdf_path,
+            )
+        else:
+            logger.info("Qualità pypdf=%s, provo OCR su: %s", quality, pdf_path)
     except Exception as e:
         diagnostics["pypdf_error"] = str(e)
+        logger.exception("Errore pypdf su %s", pdf_path)
 
     try:
         ocr_result = extract_text_from_pdf_ocr(pdf_path)
@@ -494,6 +510,7 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
                 return ocr_text, "ocr", diagnostics
     except Exception as e:
         diagnostics["ocr_error"] = str(e)
+        logger.exception("Errore OCR su %s", pdf_path)
 
     pypdf_text = (
         diagnostics.get("pypdf", {}).get("text", "")
@@ -507,6 +524,7 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
     return "", "empty", diagnostics
 
 def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) -> str | None:
+    ai_block = ((ai_data.get("analisi_qualitativa") or {}).get("abusi_difformita_sanabilita") or {})
     summary = _norm_text(ai_data.get("abusi"))
     detail = _norm_multiline(ai_data.get("abusi_dettaglio"))
     urban = _norm_multiline(ai_data.get("stato_urbanistico"))
@@ -514,9 +532,19 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
     conf_urb = _norm_text(ai_data.get("conformita_urbanistica"))
     conf_cat = _norm_text(ai_data.get("conformita_catastale"))
     spese_reg = _norm_text(ai_data.get("spese_stimate_regolarizzazione"))
-    parser_text = _norm_multiline(perizia_struct.get("abusi"))
 
     sections = []
+
+    if _norm_multiline(ai_block.get("fatto_documentale")):
+        sections.append("Fatto documentale:\n" + _norm_multiline(ai_block.get("fatto_documentale")))
+    if _norm_multiline(ai_block.get("analisi_professionale")):
+        sections.append("Analisi professionale:\n" + _norm_multiline(ai_block.get("analisi_professionale")))
+    if _norm_multiline(ai_block.get("rischio")):
+        sections.append("Rischio:\n" + _norm_multiline(ai_block.get("rischio")))
+    if _norm_multiline(ai_block.get("impatto_operativo")):
+        sections.append("Impatto operativo:\n" + _norm_multiline(ai_block.get("impatto_operativo")))
+    if _norm_multiline(ai_block.get("azione_consigliata")):
+        sections.append("Azione consigliata:\n" + _norm_multiline(ai_block.get("azione_consigliata")))
 
     if summary:
         sections.append(f"Sintesi: {summary}")
@@ -532,21 +560,30 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
         sections.append(f"Dettaglio criticità:\n{detail}")
     if spese_reg:
         sections.append(f"Spese stimate di regolarizzazione: {spese_reg}")
-    if parser_text:
-        sections.append(f"Estratti dalla perizia:\n{parser_text}")
 
     final_text = _join_paragraphs(sections)
     return _prefer_sources_then_existing(final_text, current_db_value)
 
 
 def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db_value) -> str | None:
+    ai_block = ((ai_data.get("analisi_qualitativa") or {}).get("pregiudizievoli") or {})
     summary = _norm_text(ai_data.get("pregiudizievoli"))
     detail = _norm_multiline(ai_data.get("pregiudizievoli_dettaglio"))
     vincoli = _norm_multiline(ai_data.get("vincoli_oneri"))
     debiti_cond = _norm_text(ai_data.get("debiti_condominiali"))
-    parser_text = _norm_multiline(perizia_struct.get("pregiudizievoli"))
 
     sections = []
+
+    if _norm_multiline(ai_block.get("fatto_documentale")):
+        sections.append("Fatto documentale:\n" + _norm_multiline(ai_block.get("fatto_documentale")))
+    if _norm_multiline(ai_block.get("analisi_professionale")):
+        sections.append("Analisi professionale:\n" + _norm_multiline(ai_block.get("analisi_professionale")))
+    if _norm_multiline(ai_block.get("rischio")):
+        sections.append("Rischio:\n" + _norm_multiline(ai_block.get("rischio")))
+    if _norm_multiline(ai_block.get("impatto_operativo")):
+        sections.append("Impatto operativo:\n" + _norm_multiline(ai_block.get("impatto_operativo")))
+    if _norm_multiline(ai_block.get("azione_consigliata")):
+        sections.append("Azione consigliata:\n" + _norm_multiline(ai_block.get("azione_consigliata")))
 
     if summary:
         sections.append(f"Sintesi: {summary}")
@@ -556,8 +593,6 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
         sections.append(f"Vincoli e oneri:\n{vincoli}")
     if debiti_cond:
         sections.append(f"Debiti condominiali: {debiti_cond}")
-    if parser_text:
-        sections.append(f"Estratti dalla perizia:\n{parser_text}")
 
     final_text = _join_paragraphs(sections)
     return _prefer_sources_then_existing(final_text, current_db_value)
@@ -566,12 +601,82 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
 def _build_descrizione_final(ai_data: dict, perizia_struct: dict, avviso_fields: dict, current_db_value) -> str | None:
     parts = [
         ai_data.get("descrizione_immobile"),
-        perizia_struct.get("descrizione_immobile"),
-        avviso_fields.get("descrizione_immobile"),
+        _norm_multiline(((ai_data.get("analisi_qualitativa") or {}).get("descrizione_immobile") or {}).get("analisi_professionale")),
         current_db_value,
     ]
     best = _first_non_empty(*parts)
     return _norm_multiline(best)
+
+
+def _get_ai_objective_field(ai_data: dict, field: str) -> dict | None:
+    campi = ai_data.get("campi_oggettivi")
+    if not isinstance(campi, dict):
+        return None
+    value = campi.get(field)
+    return value if isinstance(value, dict) else None
+
+
+def _get_ai_objective_value(ai_data: dict, field: str):
+    item = _get_ai_objective_field(ai_data, field)
+    if not item:
+        return None
+    return _norm_text(item.get("valore"))
+
+
+def _collect_ai_objective_warnings(ai_data: dict) -> list[str]:
+    warnings = []
+    campi = ai_data.get("campi_oggettivi")
+    if not isinstance(campi, dict):
+        return warnings
+
+    for field, payload in campi.items():
+        if not isinstance(payload, dict):
+            continue
+        warning = _norm_multiline(payload.get("warning"))
+        value = _norm_text(payload.get("valore"))
+        fonte = _norm_text(payload.get("fonte"))
+        confidenza = _norm_text(payload.get("confidenza"))
+        if warning:
+            details = []
+            if value:
+                details.append(f"valore scelto={value}")
+            if fonte:
+                details.append(f"fonte={fonte}")
+            if confidenza:
+                details.append(f"confidenza={confidenza}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            warnings.append(f"{field}: {warning}{suffix}")
+
+    return warnings
+
+
+def _build_ai_analysis_input(perizia_text: str, avviso_text: str, asta, avviso_fields: dict) -> str:
+    context = {
+        "pagina_o_db": {
+            "tribunale": getattr(asta, "tribunale", None),
+            "rge": getattr(asta, "rge", None),
+            "lotto": getattr(asta, "lotto", None),
+            "data_asta": getattr(asta, "data_asta", None),
+            "prezzo_base": getattr(asta, "prezzo_base", None),
+            "offerta_minima": getattr(asta, "offerta_minima", None),
+            "rilancio_minimo": getattr(asta, "rilancio_minimo", None),
+            "citta": getattr(asta, "citta", None),
+            "indirizzo": getattr(asta, "indirizzo", None),
+        },
+        "avviso_parser": avviso_fields or {},
+    }
+
+    cleaned_avviso = prepare_avviso_text_for_ai(avviso_text)
+    cleaned_perizia = prepare_perizia_text_for_ai(perizia_text)
+    return (
+        "CONTESTO STRUTTURATO AGGIUNTIVO (usa questo blocco per consolidare i campi oggettivi, "
+        "risolvere conflitti tra fonti e scegliere il valore piu' attendibile):\n"
+        f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+        "AVVISO PULITO:\n"
+        f"{cleaned_avviso or '[non disponibile]'}\n\n"
+        "TESTO PERIZIA PULITO:\n"
+        f"{cleaned_perizia}"
+    )
 
 
 def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rilancio_minimo) -> str | None:
@@ -606,6 +711,55 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
     if vendibilita:
         blocks.append(f"Vendibilità potenziale: {vendibilita}")
 
+    # MOD: campi aggiuntivi per una lettura legale/urbanistica più chiara.
+    rischi_legali = _norm_multiline(ai_data.get("rischi_legali"))
+    if rischi_legali:
+        blocks.append("Rischi legali:\n" + rischi_legali)
+
+    rischi_urbanistici = _norm_multiline(ai_data.get("rischi_urbanistici"))
+    if rischi_urbanistici:
+        blocks.append("Rischi urbanistici:\n" + rischi_urbanistici)
+
+    formalita_commento = _norm_multiline(ai_data.get("formalita_pregiudizievoli_commento"))
+    if formalita_commento:
+        blocks.append("Commento formalità pregiudizievoli:\n" + formalita_commento)
+
+    fatto_documentale = _norm_multiline(ai_data.get("fatto_documentale"))
+    if fatto_documentale:
+        blocks.append("Fatto documentale:\n" + fatto_documentale)
+
+    interpretazione_operativa = _norm_multiline(ai_data.get("interpretazione_operativa"))
+    if interpretazione_operativa:
+        blocks.append("Interpretazione operativa:\n" + interpretazione_operativa)
+
+    livello_rischio = _norm_text(ai_data.get("livello_rischio"))
+    if livello_rischio:
+        blocks.append(f"Livello rischio: {livello_rischio}")
+
+    azione_consigliata = _norm_multiline(ai_data.get("azione_consigliata"))
+    if azione_consigliata:
+        blocks.append("Azione consigliata:\n" + azione_consigliata)
+
+    punti_forti = _ensure_list(ai_data.get("punti_forti_operazione"))
+    if punti_forti:
+        blocks.append("Punti forti operazione:\n" + _join_bullets(punti_forti))
+
+    punti_deboli = _ensure_list(ai_data.get("punti_deboli_operazione"))
+    if punti_deboli:
+        blocks.append("Punti deboli operazione:\n" + _join_bullets(punti_deboli))
+
+    verifiche_prioritarie = _ensure_list(ai_data.get("verifiche_prioritarie"))
+    if verifiche_prioritarie:
+        blocks.append("Verifiche prioritarie:\n" + _join_bullets(verifiche_prioritarie))
+
+    giudizio_finale = _norm_multiline(ai_data.get("giudizio_finale"))
+    if giudizio_finale:
+        blocks.append("Giudizio finale:\n" + giudizio_finale)
+
+    azione_consigliata_finale = _norm_multiline(ai_data.get("azione_consigliata_finale"))
+    if azione_consigliata_finale:
+        blocks.append("Azione consigliata finale:\n" + azione_consigliata_finale)
+
     if prezzo_base or offerta_minima or rilancio_minimo:
         economic_block = []
         if prezzo_base:
@@ -617,6 +771,66 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
         blocks.append("Dati economici:\n" + "\n".join(f"- {x}" for x in economic_block))
 
     return _join_paragraphs(blocks)
+
+
+def _normalize_rge(value) -> str | None:
+    v = _norm_text(value)
+    if not v:
+        return None
+    m = re.search(r"(\d{1,6})\s*/\s*(\d{2,4})", v)
+    if not m:
+        return v
+    return f"{m.group(1)}/{m.group(2)}"
+
+
+def _normalize_field_for_validation(field: str, value):
+    if field in {"prezzo_base", "offerta_minima", "valore_perizia", "rilancio_minimo"}:
+        return normalize_money_string(_norm_text(value))
+    if field == "data_asta":
+        return normalize_date_string(_norm_text(value))
+    if field == "tribunale":
+        return clean_tribunale_name(_norm_text(value)) or _norm_text(value)
+    if field == "rge":
+        return _normalize_rge(value)
+    if field == "lotto":
+        v = _norm_text(value)
+        if not v:
+            return None
+        return "1" if v.lower() == "unico" else v.upper()
+    return _norm_text(value)
+
+
+def _build_cross_source_warnings(asta, avviso_fields: dict, perizia_struct: dict, ai_data: dict) -> list[str]:
+    # MOD: verifica incrociata su campi critici tra pagina/db, avviso, perizia/AI.
+    fields_to_check = [
+        "tribunale", "rge", "lotto", "data_asta", "prezzo_base", "offerta_minima",
+        "indirizzo", "superficie", "occupazione",
+    ]
+
+    warnings = []
+    for field in fields_to_check:
+        page_val = _normalize_field_for_validation(field, getattr(asta, field, None))
+        avviso_val = _normalize_field_for_validation(field, avviso_fields.get(field))
+        perizia_val = _normalize_field_for_validation(
+            field,
+            perizia_struct.get(field) or ai_data.get(field),
+        )
+
+        values = {
+            "pagina": page_val,
+            "avviso": avviso_val,
+            "perizia": perizia_val,
+        }
+        non_empty = {k: v for k, v in values.items() if _norm_text(v)}
+        unique = {str(v).lower() for v in non_empty.values()}
+
+        if len(unique) >= 2:
+            warnings.append(
+                f"{field}: incoerenza tra fonti -> "
+                + ", ".join(f"{src}={val}" for src, val in non_empty.items())
+            )
+
+    return warnings
 
 
 def analyze_perizia_for_asta(asta_id: int):
@@ -763,8 +977,33 @@ def analyze_perizia_for_asta(asta_id: int):
         error=None,
     )
 
-    result = analyze_perizia_text(perizia_text)
-    ai_data = result if isinstance(result, dict) else {}
+    ai_input_text = _build_ai_analysis_input(perizia_text, avviso_text, asta, avviso_fields)
+    try:
+        result = analyze_perizia_text_debug(ai_input_text)
+    except AIAnalyzerError as e:
+        update_asta_fields(
+            asta_id,
+            ai_status="error",
+            ai_error=str(e),
+            ai_prompt_text=json.dumps(e.prompt, ensure_ascii=False, indent=2) if e.prompt else None,
+            ai_raw_response=e.raw_response,
+        )
+        set_analysis_job(
+            asta_id,
+            progress=100,
+            step="errore",
+            message="Errore analisi AI",
+            done=True,
+            error=str(e),
+        )
+        raise
+
+    if not isinstance(result, dict) or not isinstance(result.get("data"), dict):
+        raise RuntimeError("Risultato AI privo di payload 'data'.")
+
+    ai_data = result["data"]
+    ai_prompt_data = result.get("prompt")
+    ai_raw_response = result.get("raw_response")
 
     # -------------------------
     # FUSIONE DATI
@@ -775,75 +1014,85 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_tribunale = clean_tribunale_name(
         _prefer_sources_then_existing(
-            getattr(asta, "tribunale", None),
-            avviso_fields.get("tribunale"),
+            _get_ai_objective_value(ai_data, "tribunale"),
             perizia_struct.get("tribunale"),
             ai_data.get("tribunale"),
+            avviso_fields.get("tribunale"),
+            getattr(asta, "tribunale", None),
         )
     )
 
-    final_rge = _prefer_existing_then_sources(
-        getattr(asta, "rge", None),
-        avviso_fields.get("rge"),
+    final_rge = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "rge"),
         perizia_struct.get("rge"),
         ai_data.get("rge"),
+        avviso_fields.get("rge"),
+        getattr(asta, "rge", None),
     )
 
-    final_lotto = _prefer_existing_then_sources(
-        getattr(asta, "lotto", None),
-        avviso_fields.get("lotto"),
+    final_lotto = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "lotto"),
         perizia_struct.get("lotto"),
         ai_data.get("lotto"),
+        avviso_fields.get("lotto"),
+        getattr(asta, "lotto", None),
     )
 
     final_data_asta = normalize_date_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "data_asta", None),
-            avviso_fields.get("data_asta"),
+        _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "data_asta"),
             ai_data.get("data_asta"),
+            avviso_fields.get("data_asta"),
+            getattr(asta, "data_asta", None),
         )
     )
 
-    final_citta = _prefer_existing_then_sources(
-        getattr(asta, "citta", None),
-        avviso_fields.get("citta"),
+    final_citta = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "comune"),
         perizia_struct.get("citta"),
         ai_data.get("citta"),
+        avviso_fields.get("citta"),
+        getattr(asta, "citta", None),
     )
 
-    final_indirizzo = _prefer_existing_then_sources(
-        getattr(asta, "indirizzo", None),
-        avviso_fields.get("indirizzo"),
+    final_indirizzo = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "indirizzo"),
         perizia_struct.get("indirizzo"),
         ai_data.get("indirizzo"),
+        avviso_fields.get("indirizzo"),
+        getattr(asta, "indirizzo", None),
     )
 
     final_prezzo_base = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "prezzo_base", None),
-            avviso_fields.get("prezzo_base"),
-            ai_data.get("prezzo_base"),
+        _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "prezzo_base"),
             perizia_struct.get("prezzo_base"),
+            ai_data.get("prezzo_base"),
+            avviso_fields.get("prezzo_base"),
+            getattr(asta, "prezzo_base", None),
         )
     )
 
     final_offerta_minima = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "offerta_minima", None),
-            avviso_fields.get("offerta_minima"),
+        _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "offerta_minima"),
             ai_data.get("offerta_minima"),
+            avviso_fields.get("offerta_minima"),
+            getattr(asta, "offerta_minima", None),
         )
     )
 
     final_rilancio_minimo = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "rilancio_minimo", None),
+        _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "rilancio_minimo"),
             avviso_fields.get("rilancio_minimo"),
+            getattr(asta, "rilancio_minimo", None),
         )
     )
 
     final_valore_perizia = normalize_money_string(
         _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "valore_perizia"),
             ai_data.get("valore_perizia"),
             perizia_struct.get("valore_perizia"),
             avviso_fields.get("valore_perizia"),
@@ -852,6 +1101,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_occupazione = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "occupazione"),
         ai_data.get("occupazione"),
         ai_data.get("stato_occupazione_dettaglio"),
         perizia_struct.get("occupazione"),
@@ -867,6 +1117,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_foglio = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "foglio"),
         ai_data.get("foglio"),
         perizia_struct.get("foglio"),
         avviso_fields.get("foglio"),
@@ -874,6 +1125,8 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_mappale = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "particella"),
+        _get_ai_objective_value(ai_data, "mappale"),
         ai_data.get("mappale"),
         perizia_struct.get("mappale"),
         avviso_fields.get("mappale"),
@@ -881,6 +1134,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_subalterno = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "subalterno"),
         ai_data.get("subalterno"),
         perizia_struct.get("subalterno"),
         avviso_fields.get("subalterno"),
@@ -889,6 +1143,7 @@ def analyze_perizia_for_asta(asta_id: int):
     final_subalterno = normalize_subalterni(final_subalterno)
 
     final_categoria_catastale = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "categoria_catastale"),
         ai_data.get("categoria_catastale"),
         perizia_struct.get("categoria_catastale"),
         avviso_fields.get("categoria_catastale"),
@@ -915,6 +1170,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_sintesi = _prefer_sources_then_existing(
+        ai_data.get("interpretazione_operativa"),
         ai_data.get("sintesi"),
         ai_data.get("riassunto_breve"),
         getattr(asta, "sintesi", None),
@@ -928,21 +1184,40 @@ def analyze_perizia_for_asta(asta_id: int):
         final_rilancio_minimo,
     )
 
+    cross_warnings = _build_cross_source_warnings(asta, avviso_fields, perizia_struct, ai_data)
+    if cross_warnings:
+        warning_block = "Verifiche incrociate (warning):\n" + "\n".join(f"- {w}" for w in cross_warnings)
+        final_note_operativi = _join_paragraphs([final_note_operativi or "", warning_block])
+
     final_proprietario = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "proprietario"),
         ai_data.get("proprietario"),
         getattr(asta, "proprietario", None),
     )
 
     final_creditore = _prefer_existing_then_sources(
-        getattr(asta, "creditore_procedente", None),
+        _get_ai_objective_value(ai_data, "creditore_procedente"),
         ai_data.get("creditore_procedente"),
+        getattr(asta, "creditore_procedente", None),
     )
+
+    objective_warnings = _collect_ai_objective_warnings(ai_data)
+    if objective_warnings:
+        final_note_operativi = _join_paragraphs([
+            final_note_operativi or "",
+            "Warning campi oggettivi scelti dall'AI:\n" + "\n".join(f"- {item}" for item in objective_warnings),
+        ])
 
     update_fields = {
         "ai_status": "done",
         "ai_error": None,
         "ai_result_json": json.dumps(ai_data, ensure_ascii=False, indent=2),
         "ai_summary": _first_non_empty(ai_data.get("riassunto_breve"), ai_data.get("sintesi")),
+        "ai_model": MODEL_NAME,
+        "ai_prompt_text": json.dumps(ai_prompt_data, ensure_ascii=False, indent=2) if ai_prompt_data else None,
+        "ai_raw_response": ai_raw_response,
+        "avviso_parsed_json": json.dumps(avviso_fields, ensure_ascii=False, indent=2) if avviso_fields else None,
+        "perizia_parsed_json": json.dumps(perizia_struct, ensure_ascii=False, indent=2) if perizia_struct else None,
         "perizia_status": f"text_extracted:{perizia_source}" if perizia_source else "text_extracted",
         "perizia_error": None,
 
