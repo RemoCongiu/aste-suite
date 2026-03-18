@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import html
 import shutil
+import threading
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.db import get_asta, get_or_create_asta, list_aste, update_asta_fields
 from app.excel_export import build_excel_export
+from app.export_utils import (
+    build_asta_detail_text,
+    build_avviso_debug_txt,
+    build_perizia_debug_txt,
+    build_simple_pdf_bytes,
+)
 from app.pdf_text import extract_text_from_pdf
 from app.routes_analysis import analyze_perizia_for_asta, set_analysis_job
 from app.services_documents import (
@@ -17,6 +25,7 @@ from app.services_documents import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,6 +37,110 @@ def _to_abs_path(path_value: str | None) -> Path | None:
     if p.is_absolute():
         return p
     return PROJECT_ROOT / p
+
+
+def _run_analysis_pipeline_async(asta_id: int):
+    """
+    MOD: pipeline analisi in thread separato per evitare endpoint HTTP bloccanti.
+    """
+    try:
+        set_analysis_job(
+            asta_id,
+            progress=55,
+            step="analisi_perizia",
+            message="Analisi documentale in corso",
+            done=False,
+            error=None,
+        )
+        analyze_perizia_for_asta(asta_id)
+
+        rename_asta_documents_from_db(asta_id, get_asta, update_asta_fields)
+
+        set_analysis_job(
+            asta_id,
+            progress=92,
+            step="excel_export",
+            message="Aggiornamento file Excel",
+            done=False,
+            error=None,
+        )
+
+        excel_output_path = PROJECT_ROOT / "data" / "export_aste.xlsx"
+        build_excel_export(list_aste(limit=10000), output_path=excel_output_path)
+
+        set_analysis_job(
+            asta_id,
+            progress=100,
+            step="completato",
+            message="Analisi completata con successo",
+            done=True,
+            error=None,
+        )
+    except Exception as e:
+        logger.exception("Errore pipeline analisi asta %s", asta_id)
+        set_analysis_job(
+            asta_id,
+            progress=100,
+            step="errore",
+            message="Errore durante analisi",
+            done=True,
+            error=str(e),
+        )
+
+
+def _run_import_pipeline_async(asta_id: int):
+    """
+    MOD: import separato dall'analisi; prepara i documenti senza eseguire AI.
+    """
+    try:
+        set_analysis_job(
+            asta_id,
+            progress=10,
+            step="import_pdf",
+            message="Importazione PDF da Download in corso",
+            done=False,
+            error=None,
+        )
+
+        ok, message = import_recent_downloaded_pdfs_for_asta(
+            asta_id=asta_id,
+            get_asta=get_asta,
+            update_asta_fields=update_asta_fields,
+            minutes=3,
+        )
+
+        if not ok:
+            set_analysis_job(
+                asta_id,
+                progress=100,
+                step="errore",
+                message="Importazione non riuscita",
+                done=True,
+                error=message,
+            )
+            return
+
+        set_analysis_job(
+            asta_id,
+            progress=50,
+            step="import_completato",
+            message=message,
+            done=False,
+            error=None,
+        )
+
+        # Avvio automatico del job analisi in seconda fase, ma separato dal job import.
+        _run_analysis_pipeline_async(asta_id)
+    except Exception as e:
+        logger.exception("Errore pipeline import asta %s", asta_id)
+        set_analysis_job(
+            asta_id,
+            progress=100,
+            step="errore",
+            message="Errore durante importazione",
+            done=True,
+            error=str(e),
+        )
 
 
 @router.get("/intake-from-browser")
@@ -137,16 +250,18 @@ async def upload_documenti(
     if updates:
         update_asta_fields(asta_id, **updates)
 
-    # Se c'è almeno la perizia, lancia subito l'analisi completa
+    # MOD: avvio analisi in background per evitare blocchi sincroni in upload manuale.
     asta_after = get_asta(asta_id)
     if asta_after and getattr(asta_after, "perizia_file_path", None):
-        try:
-            analyze_perizia_for_asta(asta_id)
-            rename_asta_documents_from_db(asta_id, get_asta, update_asta_fields)
-            excel_output_path = PROJECT_ROOT / "data" / "export_aste.xlsx"
-            build_excel_export(list_aste(limit=10000), output_path=excel_output_path)
-        except Exception:
-            pass
+        set_analysis_job(
+            asta_id,
+            progress=5,
+            step="queued",
+            message="Analisi messa in coda",
+            done=False,
+            error=None,
+        )
+        threading.Thread(target=_run_analysis_pipeline_async, args=(asta_id,), daemon=True).start()
 
     return RedirectResponse(url=f"/aste/{asta_id}", status_code=303)
 
@@ -259,6 +374,10 @@ def import_progress_page(asta_id: int):
 
 @router.post("/aste/{asta_id}/start-import-recent-pdfs")
 def start_import_recent_pdfs_endpoint(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
     set_analysis_job(
         asta_id,
         progress=5,
@@ -268,78 +387,31 @@ def start_import_recent_pdfs_endpoint(asta_id: int):
         error=None,
     )
 
-    try:
-        ok, message = import_recent_downloaded_pdfs_for_asta(
-            asta_id=asta_id,
-            get_asta=get_asta,
-            update_asta_fields=update_asta_fields,
-            minutes=3,
-        )
+    threading.Thread(target=_run_import_pipeline_async, args=(asta_id,), daemon=True).start()
+    return {"ok": True, "message": "Import+analisi avviati in background"}
 
-        if not ok:
-            set_analysis_job(
-                asta_id,
-                progress=100,
-                step="errore",
-                message="Importazione non riuscita",
-                done=True,
-                error=message,
-            )
-            return {"ok": False, "error": message}
 
-        set_analysis_job(
-            asta_id,
-            progress=35,
-            step="import_pdf",
-            message=message,
-            done=False,
-            error=None,
-        )
+@router.post("/aste/{asta_id}/start-analysis")
+def start_analysis_endpoint(asta_id: int):
+    """
+    MOD: endpoint dedicato per lanciare solo l'analisi (senza import PDF).
+    """
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+    if not getattr(asta, "perizia_file_path", None):
+        raise HTTPException(status_code=400, detail="Perizia mancante: impossibile avviare analisi")
 
-        set_analysis_job(
-            asta_id,
-            progress=70,
-            step="analisi_perizia",
-            message="Analisi documentale in corso",
-            done=False,
-            error=None,
-        )
-        analyze_perizia_for_asta(asta_id)
-
-        rename_asta_documents_from_db(asta_id, get_asta, update_asta_fields)
-
-        set_analysis_job(
-            asta_id,
-            progress=90,
-            step="excel_export",
-            message="Aggiornamento del file Excel",
-            done=False,
-            error=None,
-        )
-
-        excel_output_path = PROJECT_ROOT / "data" / "export_aste.xlsx"
-        build_excel_export(list_aste(limit=10000), output_path=excel_output_path)
-
-        set_analysis_job(
-            asta_id,
-            progress=100,
-            step="completato",
-            message="Analisi completata con successo",
-            done=True,
-            error=None,
-        )
-        return {"ok": True}
-
-    except Exception as e:
-        set_analysis_job(
-            asta_id,
-            progress=100,
-            step="errore",
-            message="Errore durante la lavorazione",
-            done=True,
-            error=str(e),
-        )
-        return {"ok": False, "error": str(e)}
+    set_analysis_job(
+        asta_id,
+        progress=5,
+        step="queued",
+        message="Analisi messa in coda",
+        done=False,
+        error=None,
+    )
+    threading.Thread(target=_run_analysis_pipeline_async, args=(asta_id,), daemon=True).start()
+    return {"ok": True, "message": "Analisi avviata in background"}
 
 
 @router.post("/aste/{asta_id}/import-recent-pdfs")
@@ -355,6 +427,52 @@ def import_recent_pdfs_endpoint(asta_id: int):
         raise HTTPException(status_code=400, detail=message)
 
     return {"ok": True, "message": message}
+
+
+@router.get("/aste/{asta_id}/export-scheda.pdf")
+def export_scheda_pdf(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    body_text = build_asta_detail_text(asta)
+    pdf_bytes = build_simple_pdf_bytes(
+        title=f"Scheda Asta {asta_id}",
+        body_text=body_text,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_scheda.pdf"'},
+    )
+
+
+@router.get("/aste/{asta_id}/debug-avviso.txt")
+def download_debug_avviso_txt(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    text = build_avviso_debug_txt(asta)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_debug_avviso.txt"'},
+    )
+
+
+@router.get("/aste/{asta_id}/debug-perizia.txt")
+def download_debug_perizia_txt(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    text = build_perizia_debug_txt(asta)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_debug_perizia.txt"'},
+    )
 
 
 @router.get("/aste/{asta_id}/debug-avviso", response_class=HTMLResponse)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -10,11 +11,20 @@ from app.services_parsing import (
     extract_avviso_fields_from_text,
     extract_structured_fields_from_perizia_text,
 )
-from app.pdf_text import extract_text_from_pdf
 from app.ocr_text import extract_text_from_pdf_ocr
 
 
+logger = logging.getLogger(__name__)
+MIN_TEXT_FOR_AI_ANALYSIS = 900
+
+
 def read_pdf_text_with_fallback(pdf_path: Path) -> str:
+    """
+    Lettura robusta testo PDF.
+    - usa pypdf con diagnostica
+    - forza OCR se testo vuoto o troppo corto
+    """
+    diag = None
     try:
         from app.pdf_text import extract_text_with_diagnostics
 
@@ -22,10 +32,22 @@ def read_pdf_text_with_fallback(pdf_path: Path) -> str:
         text = (diag.get("text") or "").strip()
         quality = diag.get("quality")
 
-        if text and quality == "good":
+        # MOD: se il testo è troppo corto lo consideriamo insufficiente e forziamo OCR.
+        if text and quality == "good" and len(text) >= MIN_TEXT_FOR_AI_ANALYSIS:
             return text
+
+        if not text:
+            logger.warning("PDF senza testo da pypdf: %s", pdf_path)
+        elif len(text) < MIN_TEXT_FOR_AI_ANALYSIS:
+            logger.warning(
+                "PDF con testo corto (%s chars), forzo OCR: %s",
+                len(text),
+                pdf_path,
+            )
+        else:
+            logger.info("PDF quality=%s, provo OCR: %s", quality, pdf_path)
     except Exception:
-        pass
+        logger.exception("Errore estrazione pypdf: %s", pdf_path)
 
     try:
         ocr_result = extract_text_from_pdf_ocr(pdf_path)
@@ -39,14 +61,17 @@ def read_pdf_text_with_fallback(pdf_path: Path) -> str:
             if ocr_text:
                 return ocr_text
     except Exception:
-        pass
+        logger.exception("Errore OCR su PDF: %s", pdf_path)
 
     try:
-        from app.pdf_text import extract_text_with_diagnostics
+        if isinstance(diag, dict):
+            return (diag.get("text") or "").strip()
 
-        diag = extract_text_with_diagnostics(pdf_path)
-        return (diag.get("text") or "").strip()
+        from app.pdf_text import extract_text_with_diagnostics
+        fallback_diag = extract_text_with_diagnostics(pdf_path)
+        return (fallback_diag.get("text") or "").strip()
     except Exception:
+        logger.exception("Fallback finale estrazione testo fallito: %s", pdf_path)
         return ""
 
 
