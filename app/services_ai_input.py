@@ -22,19 +22,6 @@ NOISE_LINE_PATTERNS = [
     r"^https?://.+$",
     r"^c\.f\..+$",
     r"^p\.iva.+$",
-    r"^il\s+sottoscritto\s+c\.?t\.?u\.?.+$",
-    r"^relazione\s+di\s+consulenza\s+tecnica.+$",
-    r"^quesito\s+n\.?\s*\d+.*$",
-    r"^allegat[oi]\b.*$",
-    r"^document[oi]\s+\d+.*$",
-]
-
-REDUCED_BLOCK_PATTERNS = [
-    r"il\s+sottoscritto\s+c\.?t\.?u\.?",
-    r"quesiti?\s+del\s+giudice",
-    r"relazione\s+di\s+consulenza\s+tecnica",
-    r"elenco\s+allegati",
-    r"richiami?\s+normativi",
 ]
 
 SECTION_PATTERNS = [
@@ -104,15 +91,6 @@ def clean_ocr_text_for_ai(text: str) -> str:
         lines.append(line)
 
     cleaned = "\n".join(lines)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-    for pattern in REDUCED_BLOCK_PATTERNS:
-        cleaned = re.sub(
-            rf"(?is){pattern}.*?(?:\n\n|\Z)",
-            "\n",
-            cleaned,
-        )
-
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 

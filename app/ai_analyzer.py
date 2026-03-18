@@ -8,42 +8,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from openai import OpenAI
 
-from app.services_ai_input import prepare_perizia_text_for_ai
-
 
 MODEL_NAME = os.getenv("OPENAI_ASTE_MODEL", "gpt-4.1-mini")
 
 __all__ = ["MODEL_NAME", "analyze_perizia_text", "analyze_perizia_text_debug"]
-
-OBJECTIVE_FIELD_NAMES = {
-    "tribunale",
-    "rge",
-    "lotto",
-    "data_asta",
-    "valore_perizia",
-    "prezzo_base",
-    "offerta_minima",
-    "rilancio_minimo",
-    "comune",
-    "citta",
-    "indirizzo",
-    "foglio",
-    "particella",
-    "mappale",
-    "subalterno",
-    "categoria_catastale",
-    "occupazione",
-    "creditore_procedente",
-    "proprietario",
-}
-
-AI_COPY_PATTERNS = [
-    r"il\s+sottoscritto\s+c\.?t\.?u\.?",
-    r"si\s+riportano\s+le\s+risultanze",
-    r"relazione\s+di\s+consulenza\s+tecnica",
-    r"\bquesito\b",
-    r"\ballegat[oi]\b",
-]
 
 KEY_SECTION_PATTERNS = [
     r"identificazione(?:\s+del)?\s+bene",
@@ -238,6 +206,15 @@ def _clean_tribunale(value: Any) -> str | None:
 def _extract_relevant_sections(text: str) -> str:
     return prepare_perizia_text_for_ai(text)
 
+    clean_text = text.replace("\r", "\n")
+    clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+
+    # MOD: se il testo è entro una dimensione gestibile lo inviamo quasi completo,
+    # per ridurre perdita di contesto nelle sezioni legali/urbanistiche.
+    if len(clean_text) <= 220000:
+        return clean_text
+
+    lower_text = clean_text.lower()
 
 def _post_process_detail_text(value: Any) -> str | None:
     v = _normalize_multiline_scalar(value)
@@ -272,10 +249,7 @@ def _normalize_source(value: Any) -> str | None:
     return text if text in allowed else text
 
 
-def _sanitize_ai_narrative_text(value: Any) -> str | None:
-    text = _post_process_detail_text(value)
-    if not text:
-        return None
+    return combined[:300000]
 
     lowered = text.lower()
     if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in AI_COPY_PATTERNS):
@@ -289,44 +263,6 @@ def _sanitize_ai_narrative_text(value: Any) -> str | None:
         return None
 
     return text
-
-
-def _normalize_objective_struct(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-
-    normalized = {
-        "valore": _normalize_scalar(value.get("valore")),
-        "fonte": _normalize_source(value.get("fonte")),
-        "confidenza": _normalize_confidence(value.get("confidenza")),
-        "warning": _sanitize_ai_narrative_text(value.get("warning")),
-    }
-    if not any(normalized.values()):
-        return None
-    return normalized
-
-
-def _normalize_qualitative_block(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-
-    normalized = {
-        "fatto_documentale": _sanitize_ai_narrative_text(value.get("fatto_documentale")),
-        "analisi_professionale": _sanitize_ai_narrative_text(value.get("analisi_professionale")),
-        "rischio": _sanitize_ai_narrative_text(value.get("rischio")),
-        "impatto_operativo": _sanitize_ai_narrative_text(value.get("impatto_operativo")),
-        "azione_consigliata": _sanitize_ai_narrative_text(value.get("azione_consigliata")),
-    }
-    if not any(normalized.values()):
-        return None
-    return normalized
-
-
-class AIAnalyzerError(RuntimeError):
-    def __init__(self, message: str, *, prompt: dict[str, Any] | None = None, raw_response: str | None = None):
-        super().__init__(message)
-        self.prompt = prompt
-        self.raw_response = raw_response
 
 
 def analyze_perizia_text_debug(text: str) -> dict[str, Any]:
@@ -366,8 +302,6 @@ REGOLE FONDAMENTALI
 - Non copiare frasi lunghe o paragrafi della perizia/OCR.
 - Niente riversamento di testo OCR grezzo: sintetizza sempre.
 - Distingui chiaramente tra fatto documentale, interpretazione, rischio e azione.
-- Se il testo contiene un contesto strutturato aggiuntivo (avviso, pagina, parser), usalo per decidere il valore migliore.
-- In caso di conflitto tra fonti, scegli il valore più attendibile, indica la fonte scelta, la confidenza e un warning breve solo se davvero utile.
 
 REGOLE SPECIFICHE IMPORTANTI
 - Sii molto severo nell'analisi di:
@@ -386,11 +320,6 @@ REGOLE SPECIFICHE IMPORTANTI
 - "costi_probabili" deve contenere costi o esborsi probabili ricavabili dal testo.
 - "punti_di_attenzione_investitore" deve essere pratico e concreto.
 - "valutazione_operativa" e "strategia_consigliata" devono essere utili per decidere se approfondire o meno.
-- "fatto_documentale", "interpretazione_operativa", "livello_rischio" e "azione_consigliata" devono essere brevi e operativi.
-- "punti_forti_operazione", "punti_deboli_operazione" e "verifiche_prioritarie" devono essere liste sintetiche.
-- "giudizio_finale" e "azione_consigliata_finale" devono aiutare l'investitore a decidere il prossimo passo.
-- I campi oggettivi devono includere sempre: valore, fonte, confidenza, warning.
-- L'analisi qualitativa deve essere divisa per temi e usare linguaggio professionale, non scolastico.
 
 STILE DI SCRITTURA RICHIESTO
 - Linguaggio chiaro, concreto e leggibile da un investitore non tecnico.
@@ -434,23 +363,48 @@ Restituisci un JSON valido con questa struttura esatta:
     "pregiudizievoli": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
     "occupazione_liberazione": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}}
   }},
-  "giudizio_investitore": {{
-    "punti_forti_operazione": [],
-    "punti_deboli_operazione": [],
-    "verifiche_prioritarie": [],
-    "giudizio_finale": null,
-    "azione_consigliata_finale": null,
-    "livello_rischio": null
+  "lettura_investitore": {{
+    "sintesi": null,
+    "riassunto_breve": null,
+    "criticita_principali": [],
+    "costi_probabili": [],
+    "punti_di_attenzione_investitore": [],
+    "valutazione_operativa": null,
+    "strategia_consigliata": null,
+    "rischio_operazione": null,
+    "vendibilita_potenziale": null,
+    "note_investitore": null,
+    "rischi_legali": null,
+    "rischi_urbanistici": null,
+    "formalita_pregiudizievoli_commento": null
   }}
 }}
 
 ISTRUZIONI AGGIUNTIVE IMPORTANTI:
-- Devi anche valorizzare campi legacy coerenti con questa analisi, quando utili, ma senza copiare testo grezzo.
-- In "analisi_qualitativa" ogni sezione deve distinguere fatto, analisi, rischio, impatto e azione.
-- Se una sezione non è supportata dal testo, lasciala null.
+- "pregiudizievoli" deve essere una sintesi breve ma sostanziale.
+- "pregiudizievoli_dettaglio" deve contenere il maggior dettaglio utile disponibile.
+- "abusi" deve essere una sintesi breve.
+- "abusi_dettaglio" deve spiegare bene:
+  - eventuali difformità
+  - se risultano sanabili o non sanabili
+  - se servono verifiche o pratiche edilizie/catastali
+- "stato_urbanistico" deve sintetizzare il quadro urbanistico.
+- "stato_catastale" deve sintetizzare il quadro catastale.
+- "conformita_catastale" e "conformita_urbanistica" devono essere esplicite.
+- "descrizione_immobile" deve essere concreta e leggibile.
+- "criticita_principali" deve essere una lista di veri elementi di rischio.
+- "costi_probabili" deve includere, se presenti o chiaramente probabili:
+  - regolarizzazioni urbanistiche/catastali
+  - liberazione immobile
+  - debiti condominiali
+  - lavori
+  - impianti
+- "rischio_operazione" può essere solo: "basso", "medio", "alto".
 - "livello_rischio" deve essere uno tra: "basso", "medio", "alto".
+- "fatto_documentale" = solo ciò che risulta dal testo.
+- "interpretazione_operativa" = lettura sintetica utile per investitore.
+- "azione_consigliata" = singola azione pratica immediata.
 - "azione_consigliata_finale" = esito finale tipo approfondire / fare offerta prudente / evitare.
-- Se il dato è dubbio o conflittuale: scegli il migliore, assegna confidenza media o bassa e compila "warning".
 """
 
     prompt_payload = {
@@ -557,41 +511,23 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
         "conformita_catastale": _normalize_scalar(dati_documentali.get("conformita_catastale")),
         "conformita_urbanistica": _normalize_scalar(dati_documentali.get("conformita_urbanistica")),
         "spese_stimate_regolarizzazione": _normalize_scalar(dati_documentali.get("spese_stimate_regolarizzazione")),
-        "prezzo_base": _normalize_scalar((normalized_objective_fields.get("prezzo_base") or {}).get("valore") or dati_documentali.get("prezzo_base")),
-        "offerta_minima": _normalize_scalar((normalized_objective_fields.get("offerta_minima") or {}).get("valore") or dati_documentali.get("offerta_minima")),
-        "rilancio_minimo": _normalize_scalar((normalized_objective_fields.get("rilancio_minimo") or {}).get("valore")),
-        "sintesi": _sanitize_ai_narrative_text(lettura_investitore.get("sintesi")),
+        "prezzo_base": _normalize_scalar(dati_documentali.get("prezzo_base")),
+        "offerta_minima": _normalize_scalar(dati_documentali.get("offerta_minima")),
+        "sintesi": _post_process_detail_text(lettura_investitore.get("sintesi")),
         "riassunto_breve": _normalize_scalar(lettura_investitore.get("riassunto_breve")),
         "criticita_principali": _ensure_list(lettura_investitore.get("criticita_principali")),
         "costi_probabili": _ensure_list(lettura_investitore.get("costi_probabili")),
         "punti_di_attenzione_investitore": _ensure_list(lettura_investitore.get("punti_di_attenzione_investitore")),
-        "valutazione_operativa": _sanitize_ai_narrative_text(lettura_investitore.get("valutazione_operativa")),
-        "strategia_consigliata": _sanitize_ai_narrative_text(lettura_investitore.get("strategia_consigliata")),
-        "rischio_operazione": livello_rischio or _ensure_risk(lettura_investitore.get("rischio_operazione")),
+        "valutazione_operativa": _post_process_detail_text(lettura_investitore.get("valutazione_operativa")),
+        "strategia_consigliata": _post_process_detail_text(lettura_investitore.get("strategia_consigliata")),
+        "rischio_operazione": _ensure_risk(lettura_investitore.get("rischio_operazione")),
         "vendibilita_potenziale": _normalize_scalar(lettura_investitore.get("vendibilita_potenziale")),
-        "note_investitore": _sanitize_ai_narrative_text(lettura_investitore.get("note_investitore")),
-        "rischi_legali": _sanitize_ai_narrative_text(lettura_investitore.get("rischi_legali")),
-        "rischi_urbanistici": _sanitize_ai_narrative_text(lettura_investitore.get("rischi_urbanistici")),
-        "formalita_pregiudizievoli_commento": _sanitize_ai_narrative_text(lettura_investitore.get("formalita_pregiudizievoli_commento")),
-        "fatto_documentale": _sanitize_ai_narrative_text(lettura_investitore.get("fatto_documentale")),
-        "interpretazione_operativa": _sanitize_ai_narrative_text(lettura_investitore.get("interpretazione_operativa")),
-        "analisi_professionale": _sanitize_ai_narrative_text(lettura_investitore.get("analisi_professionale")),
-        "impatto_operativo": _sanitize_ai_narrative_text(lettura_investitore.get("impatto_operativo")),
-        "livello_rischio": livello_rischio,
-        "azione_consigliata": _sanitize_ai_narrative_text(lettura_investitore.get("azione_consigliata")),
-        "punti_forti_operazione": _ensure_list(giudizio_investitore.get("punti_forti_operazione")) or _ensure_list(lettura_investitore.get("punti_forti_operazione")),
-        "punti_deboli_operazione": _ensure_list(giudizio_investitore.get("punti_deboli_operazione")) or _ensure_list(lettura_investitore.get("punti_deboli_operazione")),
-        "verifiche_prioritarie": _ensure_list(giudizio_investitore.get("verifiche_prioritarie")) or _ensure_list(lettura_investitore.get("verifiche_prioritarie")),
-        "giudizio_finale": _sanitize_ai_narrative_text(giudizio_investitore.get("giudizio_finale")) or _sanitize_ai_narrative_text(lettura_investitore.get("giudizio_finale")),
-        "azione_consigliata_finale": _sanitize_ai_narrative_text(giudizio_investitore.get("azione_consigliata_finale")) or _sanitize_ai_narrative_text(lettura_investitore.get("azione_consigliata_finale")),
+        "note_investitore": _post_process_detail_text(lettura_investitore.get("note_investitore")),
+        "rischi_legali": _post_process_detail_text(lettura_investitore.get("rischi_legali")),
+        "rischi_urbanistici": _post_process_detail_text(lettura_investitore.get("rischi_urbanistici")),
+        "formalita_pregiudizievoli_commento": _post_process_detail_text(
+            lettura_investitore.get("formalita_pregiudizievoli_commento")
+        ),
     }
 
-    return {
-        "data": normalized,
-        "prompt": prompt_payload,
-        "raw_response": raw_text,
-    }
-
-
-def analyze_perizia_text(text: str) -> dict:
-    return analyze_perizia_text_debug(text)["data"]
+    return normalized
