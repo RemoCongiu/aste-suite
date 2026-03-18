@@ -258,7 +258,7 @@ def _post_process_detail_text(value: Any) -> str | None:
     return text.strip()
 
 
-def analyze_perizia_text(text: str) -> dict[str, Any]:
+def analyze_perizia_text_debug(text: str) -> dict[str, Any]:
     if not text or not text.strip():
         raise ValueError("Testo perizia vuoto.")
 
@@ -461,14 +461,11 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
         "spese_stimate_regolarizzazione": _normalize_scalar(dati_documentali.get("spese_stimate_regolarizzazione")),
         "prezzo_base": _normalize_scalar(dati_documentali.get("prezzo_base")),
         "offerta_minima": _normalize_scalar(dati_documentali.get("offerta_minima")),
-
         "sintesi": _post_process_detail_text(lettura_investitore.get("sintesi")),
         "riassunto_breve": _normalize_scalar(lettura_investitore.get("riassunto_breve")),
         "criticita_principali": _ensure_list(lettura_investitore.get("criticita_principali")),
         "costi_probabili": _ensure_list(lettura_investitore.get("costi_probabili")),
-        "punti_di_attenzione_investitore": _ensure_list(
-            lettura_investitore.get("punti_di_attenzione_investitore")
-        ),
+        "punti_di_attenzione_investitore": _ensure_list(lettura_investitore.get("punti_di_attenzione_investitore")),
         "valutazione_operativa": _post_process_detail_text(lettura_investitore.get("valutazione_operativa")),
         "strategia_consigliata": _post_process_detail_text(lettura_investitore.get("strategia_consigliata")),
         "rischio_operazione": _ensure_risk(lettura_investitore.get("rischio_operazione")),

@@ -852,8 +852,10 @@ def analyze_perizia_for_asta(asta_id: int):
         error=None,
     )
 
-    result = analyze_perizia_text(perizia_text)
-    ai_data = result if isinstance(result, dict) else {}
+    result = analyze_perizia_text_debug(perizia_text)
+    ai_data = result.get("data", {}) if isinstance(result, dict) else {}
+    ai_prompt_data = result.get("prompt") if isinstance(result, dict) else None
+    ai_raw_response = result.get("raw_response") if isinstance(result, dict) else None
 
     # -------------------------
     # FUSIONE DATI
@@ -864,63 +866,63 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_tribunale = clean_tribunale_name(
         _prefer_sources_then_existing(
-            getattr(asta, "tribunale", None),
-            avviso_fields.get("tribunale"),
             perizia_struct.get("tribunale"),
             ai_data.get("tribunale"),
+            avviso_fields.get("tribunale"),
+            getattr(asta, "tribunale", None),
         )
     )
 
-    final_rge = _prefer_existing_then_sources(
-        getattr(asta, "rge", None),
-        avviso_fields.get("rge"),
+    final_rge = _prefer_sources_then_existing(
         perizia_struct.get("rge"),
         ai_data.get("rge"),
+        avviso_fields.get("rge"),
+        getattr(asta, "rge", None),
     )
 
-    final_lotto = _prefer_existing_then_sources(
-        getattr(asta, "lotto", None),
-        avviso_fields.get("lotto"),
+    final_lotto = _prefer_sources_then_existing(
         perizia_struct.get("lotto"),
         ai_data.get("lotto"),
+        avviso_fields.get("lotto"),
+        getattr(asta, "lotto", None),
     )
 
     final_data_asta = normalize_date_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "data_asta", None),
-            avviso_fields.get("data_asta"),
+        _prefer_sources_then_existing(
             ai_data.get("data_asta"),
+            avviso_fields.get("data_asta"),
+            getattr(asta, "data_asta", None),
         )
     )
 
-    final_citta = _prefer_existing_then_sources(
-        getattr(asta, "citta", None),
-        avviso_fields.get("citta"),
+    final_citta = _prefer_sources_then_existing(
         perizia_struct.get("citta"),
         ai_data.get("citta"),
+        avviso_fields.get("citta"),
+        getattr(asta, "citta", None),
     )
 
-    final_indirizzo = _prefer_existing_then_sources(
-        getattr(asta, "indirizzo", None),
-        avviso_fields.get("indirizzo"),
+    final_indirizzo = _prefer_sources_then_existing(
         perizia_struct.get("indirizzo"),
         ai_data.get("indirizzo"),
+        avviso_fields.get("indirizzo"),
+        getattr(asta, "indirizzo", None),
     )
 
     final_prezzo_base = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "prezzo_base", None),
-            avviso_fields.get("prezzo_base"),
-            ai_data.get("prezzo_base"),
+        _prefer_sources_then_existing(
             perizia_struct.get("prezzo_base"),
+            ai_data.get("prezzo_base"),
+            avviso_fields.get("prezzo_base"),
+            getattr(asta, "prezzo_base", None),
         )
     )
 
     final_offerta_minima = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "offerta_minima", None),
-            avviso_fields.get("offerta_minima"),
+        _prefer_sources_then_existing(
             ai_data.get("offerta_minima"),
+            avviso_fields.get("offerta_minima"),
+            getattr(asta, "offerta_minima", None),
         )
     )
 
