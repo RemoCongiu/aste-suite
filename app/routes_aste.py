@@ -18,7 +18,7 @@ from app.export_utils import (
     build_simple_pdf_bytes,
 )
 from app.pdf_text import extract_text_from_pdf
-from app.routes_analysis import analyze_perizia_for_asta, set_analysis_job
+from app.routes_analysis import analyze_perizia_for_asta, get_analysis_job, set_analysis_job
 from app.services_documents import (
     import_recent_downloaded_pdfs_for_asta,
     rename_asta_documents_from_db,
