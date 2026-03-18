@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.ai_analyzer import analyze_perizia_text
+from app.ai_analyzer import MODEL_NAME, analyze_perizia_text
 from app.db import get_asta, update_asta_fields
 from app.ocr_text import extract_text_from_pdf_ocr
-from app.pdf_text import extract_text_from_pdf
 from app.services_parsing import (
     clean_text_block,
     clean_tribunale_name,
@@ -20,6 +20,8 @@ from app.services_parsing import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+MIN_TEXT_FOR_ANALYSIS = 900
 
 ANALYSIS_JOBS: dict[int, dict] = {}
 
@@ -475,10 +477,23 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
         text = (diag.get("text") or "").strip()
         quality = diag.get("quality")
 
-        if text and quality == "good":
+        # MOD: testo troppo corto => qualità insufficiente per analisi affidabile.
+        if text and quality == "good" and len(text) >= MIN_TEXT_FOR_ANALYSIS:
             return text, "pypdf", diagnostics
+
+        if not text:
+            logger.warning("Nessun testo estratto da pypdf: %s", pdf_path)
+        elif len(text) < MIN_TEXT_FOR_ANALYSIS:
+            logger.warning(
+                "Testo corto da pypdf (%s chars), forzo OCR: %s",
+                len(text),
+                pdf_path,
+            )
+        else:
+            logger.info("Qualità pypdf=%s, provo OCR su: %s", quality, pdf_path)
     except Exception as e:
         diagnostics["pypdf_error"] = str(e)
+        logger.exception("Errore pypdf su %s", pdf_path)
 
     try:
         ocr_result = extract_text_from_pdf_ocr(pdf_path)
@@ -494,6 +509,7 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
                 return ocr_text, "ocr", diagnostics
     except Exception as e:
         diagnostics["ocr_error"] = str(e)
+        logger.exception("Errore OCR su %s", pdf_path)
 
     pypdf_text = (
         diagnostics.get("pypdf", {}).get("text", "")
@@ -606,6 +622,19 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
     if vendibilita:
         blocks.append(f"Vendibilità potenziale: {vendibilita}")
 
+    # MOD: campi aggiuntivi per una lettura legale/urbanistica più chiara.
+    rischi_legali = _norm_multiline(ai_data.get("rischi_legali"))
+    if rischi_legali:
+        blocks.append("Rischi legali:\n" + rischi_legali)
+
+    rischi_urbanistici = _norm_multiline(ai_data.get("rischi_urbanistici"))
+    if rischi_urbanistici:
+        blocks.append("Rischi urbanistici:\n" + rischi_urbanistici)
+
+    formalita_commento = _norm_multiline(ai_data.get("formalita_pregiudizievoli_commento"))
+    if formalita_commento:
+        blocks.append("Commento formalità pregiudizievoli:\n" + formalita_commento)
+
     if prezzo_base or offerta_minima or rilancio_minimo:
         economic_block = []
         if prezzo_base:
@@ -617,6 +646,66 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
         blocks.append("Dati economici:\n" + "\n".join(f"- {x}" for x in economic_block))
 
     return _join_paragraphs(blocks)
+
+
+def _normalize_rge(value) -> str | None:
+    v = _norm_text(value)
+    if not v:
+        return None
+    m = re.search(r"(\d{1,6})\s*/\s*(\d{2,4})", v)
+    if not m:
+        return v
+    return f"{m.group(1)}/{m.group(2)}"
+
+
+def _normalize_field_for_validation(field: str, value):
+    if field in {"prezzo_base", "offerta_minima", "valore_perizia", "rilancio_minimo"}:
+        return normalize_money_string(_norm_text(value))
+    if field == "data_asta":
+        return normalize_date_string(_norm_text(value))
+    if field == "tribunale":
+        return clean_tribunale_name(_norm_text(value)) or _norm_text(value)
+    if field == "rge":
+        return _normalize_rge(value)
+    if field == "lotto":
+        v = _norm_text(value)
+        if not v:
+            return None
+        return "1" if v.lower() == "unico" else v.upper()
+    return _norm_text(value)
+
+
+def _build_cross_source_warnings(asta, avviso_fields: dict, perizia_struct: dict, ai_data: dict) -> list[str]:
+    # MOD: verifica incrociata su campi critici tra pagina/db, avviso, perizia/AI.
+    fields_to_check = [
+        "tribunale", "rge", "lotto", "data_asta", "prezzo_base", "offerta_minima",
+        "indirizzo", "superficie", "occupazione",
+    ]
+
+    warnings = []
+    for field in fields_to_check:
+        page_val = _normalize_field_for_validation(field, getattr(asta, field, None))
+        avviso_val = _normalize_field_for_validation(field, avviso_fields.get(field))
+        perizia_val = _normalize_field_for_validation(
+            field,
+            perizia_struct.get(field) or ai_data.get(field),
+        )
+
+        values = {
+            "pagina": page_val,
+            "avviso": avviso_val,
+            "perizia": perizia_val,
+        }
+        non_empty = {k: v for k, v in values.items() if _norm_text(v)}
+        unique = {str(v).lower() for v in non_empty.values()}
+
+        if len(unique) >= 2:
+            warnings.append(
+                f"{field}: incoerenza tra fonti -> "
+                + ", ".join(f"{src}={val}" for src, val in non_empty.items())
+            )
+
+    return warnings
 
 
 def analyze_perizia_for_asta(asta_id: int):
@@ -928,6 +1017,11 @@ def analyze_perizia_for_asta(asta_id: int):
         final_rilancio_minimo,
     )
 
+    cross_warnings = _build_cross_source_warnings(asta, avviso_fields, perizia_struct, ai_data)
+    if cross_warnings:
+        warning_block = "Verifiche incrociate (warning):\n" + "\n".join(f"- {w}" for w in cross_warnings)
+        final_note_operativi = _join_paragraphs([final_note_operativi or "", warning_block])
+
     final_proprietario = _prefer_sources_then_existing(
         ai_data.get("proprietario"),
         getattr(asta, "proprietario", None),
@@ -943,6 +1037,7 @@ def analyze_perizia_for_asta(asta_id: int):
         "ai_error": None,
         "ai_result_json": json.dumps(ai_data, ensure_ascii=False, indent=2),
         "ai_summary": _first_non_empty(ai_data.get("riassunto_breve"), ai_data.get("sintesi")),
+        "ai_model": MODEL_NAME,
         "perizia_status": f"text_extracted:{perizia_source}" if perizia_source else "text_extracted",
         "perizia_error": None,
 

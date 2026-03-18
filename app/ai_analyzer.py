@@ -205,6 +205,13 @@ def _extract_relevant_sections(text: str) -> str:
         return ""
 
     clean_text = text.replace("\r", "\n")
+    clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+
+    # MOD: se il testo è entro una dimensione gestibile lo inviamo quasi completo,
+    # per ridurre perdita di contesto nelle sezioni legali/urbanistiche.
+    if len(clean_text) <= 220000:
+        return clean_text
+
     lower_text = clean_text.lower()
 
     windows: list[tuple[int, int]] = []
@@ -238,7 +245,7 @@ def _extract_relevant_sections(text: str) -> str:
     combined = head + "\n\n" + selected + "\n\n" + tail
     combined = re.sub(r"\n{3,}", "\n\n", combined)
 
-    return combined[:220000]
+    return combined[:300000]
 
 
 def _post_process_detail_text(value: Any) -> str | None:
@@ -302,6 +309,11 @@ REGOLE SPECIFICHE IMPORTANTI
 - "costi_probabili" deve contenere costi o esborsi probabili ricavabili dal testo.
 - "punti_di_attenzione_investitore" deve essere pratico e concreto.
 - "valutazione_operativa" e "strategia_consigliata" devono essere utili per decidere se approfondire o meno.
+
+STILE DI SCRITTURA RICHIESTO
+- Linguaggio chiaro, concreto e leggibile da un investitore non tecnico.
+- Frasi brevi, niente tecnicismi inutili.
+- Evidenzia in modo esplicito: rischi legali, rischi urbanistici e impatto economico.
 """
 
     user_prompt = f"""
@@ -363,7 +375,10 @@ Restituisci un JSON valido con questa struttura esatta:
     "strategia_consigliata": null,
     "rischio_operazione": null,
     "vendibilita_potenziale": null,
-    "note_investitore": null
+    "note_investitore": null,
+    "rischi_legali": null,
+    "rischi_urbanistici": null,
+    "formalita_pregiudizievoli_commento": null
   }}
 }}
 
@@ -459,6 +474,11 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
         "rischio_operazione": _ensure_risk(lettura_investitore.get("rischio_operazione")),
         "vendibilita_potenziale": _normalize_scalar(lettura_investitore.get("vendibilita_potenziale")),
         "note_investitore": _post_process_detail_text(lettura_investitore.get("note_investitore")),
+        "rischi_legali": _post_process_detail_text(lettura_investitore.get("rischi_legali")),
+        "rischi_urbanistici": _post_process_detail_text(lettura_investitore.get("rischi_urbanistici")),
+        "formalita_pregiudizievoli_commento": _post_process_detail_text(
+            lettura_investitore.get("formalita_pregiudizievoli_commento")
+        ),
     }
 
     return normalized
