@@ -328,9 +328,9 @@ STILE DI SCRITTURA RICHIESTO
 """
 
     user_prompt = f"""
-Analizza la seguente perizia immobiliare.
+Analizza la seguente documentazione immobiliare d'asta.
 
-TESTO PERIZIA:
+TESTO DOCUMENTI:
 {trimmed_text}
 
 Restituisci un JSON valido con questa struttura esatta:

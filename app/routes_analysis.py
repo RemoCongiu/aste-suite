@@ -523,6 +523,7 @@ def _read_pdf_text_with_fallback(pdf_path: Path) -> tuple[str, str, dict]:
     return "", "empty", diagnostics
 
 def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) -> str | None:
+    ai_block = ((ai_data.get("analisi_qualitativa") or {}).get("abusi_difformita_sanabilita") or {})
     summary = _norm_text(ai_data.get("abusi"))
     detail = _norm_multiline(ai_data.get("abusi_dettaglio"))
     urban = _norm_multiline(ai_data.get("stato_urbanistico"))
@@ -532,6 +533,17 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
     spese_reg = _norm_text(ai_data.get("spese_stimate_regolarizzazione"))
 
     sections = []
+
+    if _norm_multiline(ai_block.get("fatto_documentale")):
+        sections.append("Fatto documentale:\n" + _norm_multiline(ai_block.get("fatto_documentale")))
+    if _norm_multiline(ai_block.get("analisi_professionale")):
+        sections.append("Analisi professionale:\n" + _norm_multiline(ai_block.get("analisi_professionale")))
+    if _norm_multiline(ai_block.get("rischio")):
+        sections.append("Rischio:\n" + _norm_multiline(ai_block.get("rischio")))
+    if _norm_multiline(ai_block.get("impatto_operativo")):
+        sections.append("Impatto operativo:\n" + _norm_multiline(ai_block.get("impatto_operativo")))
+    if _norm_multiline(ai_block.get("azione_consigliata")):
+        sections.append("Azione consigliata:\n" + _norm_multiline(ai_block.get("azione_consigliata")))
 
     if summary:
         sections.append(f"Sintesi: {summary}")
@@ -553,12 +565,24 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
 
 
 def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db_value) -> str | None:
+    ai_block = ((ai_data.get("analisi_qualitativa") or {}).get("pregiudizievoli") or {})
     summary = _norm_text(ai_data.get("pregiudizievoli"))
     detail = _norm_multiline(ai_data.get("pregiudizievoli_dettaglio"))
     vincoli = _norm_multiline(ai_data.get("vincoli_oneri"))
     debiti_cond = _norm_text(ai_data.get("debiti_condominiali"))
 
     sections = []
+
+    if _norm_multiline(ai_block.get("fatto_documentale")):
+        sections.append("Fatto documentale:\n" + _norm_multiline(ai_block.get("fatto_documentale")))
+    if _norm_multiline(ai_block.get("analisi_professionale")):
+        sections.append("Analisi professionale:\n" + _norm_multiline(ai_block.get("analisi_professionale")))
+    if _norm_multiline(ai_block.get("rischio")):
+        sections.append("Rischio:\n" + _norm_multiline(ai_block.get("rischio")))
+    if _norm_multiline(ai_block.get("impatto_operativo")):
+        sections.append("Impatto operativo:\n" + _norm_multiline(ai_block.get("impatto_operativo")))
+    if _norm_multiline(ai_block.get("azione_consigliata")):
+        sections.append("Azione consigliata:\n" + _norm_multiline(ai_block.get("azione_consigliata")))
 
     if summary:
         sections.append(f"Sintesi: {summary}")
