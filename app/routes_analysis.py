@@ -530,7 +530,6 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
     conf_urb = _norm_text(ai_data.get("conformita_urbanistica"))
     conf_cat = _norm_text(ai_data.get("conformita_catastale"))
     spese_reg = _norm_text(ai_data.get("spese_stimate_regolarizzazione"))
-    parser_text = _norm_multiline(perizia_struct.get("abusi"))
 
     sections = []
 
@@ -548,8 +547,6 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
         sections.append(f"Dettaglio criticità:\n{detail}")
     if spese_reg:
         sections.append(f"Spese stimate di regolarizzazione: {spese_reg}")
-    if parser_text:
-        sections.append(f"Estratti dalla perizia:\n{parser_text}")
 
     final_text = _join_paragraphs(sections)
     return _prefer_sources_then_existing(final_text, current_db_value)
@@ -560,7 +557,6 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
     detail = _norm_multiline(ai_data.get("pregiudizievoli_dettaglio"))
     vincoli = _norm_multiline(ai_data.get("vincoli_oneri"))
     debiti_cond = _norm_text(ai_data.get("debiti_condominiali"))
-    parser_text = _norm_multiline(perizia_struct.get("pregiudizievoli"))
 
     sections = []
 
@@ -572,8 +568,6 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
         sections.append(f"Vincoli e oneri:\n{vincoli}")
     if debiti_cond:
         sections.append(f"Debiti condominiali: {debiti_cond}")
-    if parser_text:
-        sections.append(f"Estratti dalla perizia:\n{parser_text}")
 
     final_text = _join_paragraphs(sections)
     return _prefer_sources_then_existing(final_text, current_db_value)
@@ -582,7 +576,6 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
 def _build_descrizione_final(ai_data: dict, perizia_struct: dict, avviso_fields: dict, current_db_value) -> str | None:
     parts = [
         ai_data.get("descrizione_immobile"),
-        perizia_struct.get("descrizione_immobile"),
         avviso_fields.get("descrizione_immobile"),
         current_db_value,
     ]
@@ -1006,6 +999,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_sintesi = _prefer_sources_then_existing(
+        ai_data.get("interpretazione_operativa"),
         ai_data.get("sintesi"),
         ai_data.get("riassunto_breve"),
         getattr(asta, "sintesi", None),

@@ -300,6 +300,9 @@ REGOLE FONDAMENTALI
 - Nessun markdown.
 - Nessun testo fuori dal JSON.
 - Scrivi in italiano.
+- Non copiare frasi lunghe o paragrafi della perizia/OCR.
+- Niente riversamento di testo OCR grezzo: sintetizza sempre.
+- Distingui chiaramente tra fatto documentale, interpretazione, rischio e azione.
 
 REGOLE SPECIFICHE IMPORTANTI
 - Sii molto severo nell'analisi di:
@@ -411,6 +414,11 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
   - lavori
   - impianti
 - "rischio_operazione" può essere solo: "basso", "medio", "alto".
+- "livello_rischio" deve essere uno tra: "basso", "medio", "alto".
+- "fatto_documentale" = solo ciò che risulta dal testo.
+- "interpretazione_operativa" = lettura sintetica utile per investitore.
+- "azione_consigliata" = singola azione pratica immediata.
+- "azione_consigliata_finale" = esito finale tipo approfondire / fare offerta prudente / evitare.
 """
 
     try:
