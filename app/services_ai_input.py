@@ -22,19 +22,6 @@ NOISE_LINE_PATTERNS = [
     r"^https?://.+$",
     r"^c\.f\..+$",
     r"^p\.iva.+$",
-    r"^il\s+sottoscritto\s+c\.?t\.?u\.?.+$",
-    r"^relazione\s+di\s+consulenza\s+tecnica.+$",
-    r"^quesito\s+n\.?\s*\d+.*$",
-    r"^allegat[oi]\b.*$",
-    r"^document[oi]\s+\d+.*$",
-]
-
-REDUCED_BLOCK_PATTERNS = [
-    r"il\s+sottoscritto\s+c\.?t\.?u\.?",
-    r"quesiti?\s+del\s+giudice",
-    r"relazione\s+di\s+consulenza\s+tecnica",
-    r"elenco\s+allegati",
-    r"richiami?\s+normativi",
 ]
 
 SECTION_PATTERNS = [
@@ -67,22 +54,6 @@ SECTION_PATTERNS = [
     r"agibilit[aà]",
     r"stima",
     r"valore\s+di\s+mercato",
-]
-
-AVVISO_SECTION_PATTERNS = [
-    r"tribunale",
-    r"rge",
-    r"lotto",
-    r"data\s+(?:asta|vendita)",
-    r"prezzo\s+base",
-    r"offerta\s+minima",
-    r"rilancio",
-    r"ubicazione",
-    r"indirizzo",
-    r"occupazione",
-    r"custode",
-    r"delegato",
-    r"valore\s+di\s+perizia",
 ]
 
 
@@ -120,15 +91,6 @@ def clean_ocr_text_for_ai(text: str) -> str:
         lines.append(line)
 
     cleaned = "\n".join(lines)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-
-    for pattern in REDUCED_BLOCK_PATTERNS:
-        cleaned = re.sub(
-            rf"(?is){pattern}.*?(?:\n\n|\Z)",
-            "\n",
-            cleaned,
-        )
-
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 
@@ -187,34 +149,3 @@ def prepare_perizia_text_for_ai(text: str) -> str:
         return selected
 
     return selected[:180000]
-
-
-def prepare_avviso_text_for_ai(text: str) -> str:
-    cleaned = clean_ocr_text_for_ai(text)
-    if not cleaned:
-        return ""
-
-    lower_text = cleaned.lower()
-    windows: list[tuple[int, int]] = []
-
-    for pattern in AVVISO_SECTION_PATTERNS:
-        for match in re.finditer(pattern, lower_text, flags=re.IGNORECASE):
-            start = max(0, match.start() - 600)
-            end = min(len(cleaned), match.end() + 2200)
-            windows.append((start, end))
-
-    if not windows:
-        return cleaned[:30000]
-
-    windows.sort()
-    merged: list[list[int]] = []
-    for start, end in windows:
-        if not merged or start > merged[-1][1]:
-            merged.append([start, end])
-        else:
-            merged[-1][1] = max(merged[-1][1], end)
-
-    chunks = [cleaned[start:end].strip() for start, end in merged if end > start]
-    text_out = "\n\n".join(chunk for chunk in chunks if chunk)
-    text_out = re.sub(r"\n{3,}", "\n\n", text_out).strip()
-    return text_out[:40000]
