@@ -7,10 +7,16 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.db import get_asta, get_or_create_asta, list_aste, update_asta_fields
 from app.excel_export import build_excel_export
+from app.export_utils import (
+    build_asta_detail_text,
+    build_avviso_debug_txt,
+    build_perizia_debug_txt,
+    build_simple_pdf_bytes,
+)
 from app.pdf_text import extract_text_from_pdf
 from app.routes_analysis import analyze_perizia_for_asta, set_analysis_job
 from app.services_documents import (
@@ -421,6 +427,52 @@ def import_recent_pdfs_endpoint(asta_id: int):
         raise HTTPException(status_code=400, detail=message)
 
     return {"ok": True, "message": message}
+
+
+@router.get("/aste/{asta_id}/export-scheda.pdf")
+def export_scheda_pdf(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    body_text = build_asta_detail_text(asta)
+    pdf_bytes = build_simple_pdf_bytes(
+        title=f"Scheda Asta {asta_id}",
+        body_text=body_text,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_scheda.pdf"'},
+    )
+
+
+@router.get("/aste/{asta_id}/debug-avviso.txt")
+def download_debug_avviso_txt(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    text = build_avviso_debug_txt(asta)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_debug_avviso.txt"'},
+    )
+
+
+@router.get("/aste/{asta_id}/debug-perizia.txt")
+def download_debug_perizia_txt(asta_id: int):
+    asta = get_asta(asta_id)
+    if not asta:
+        raise HTTPException(status_code=404, detail="Asta non trovata")
+
+    text = build_perizia_debug_txt(asta)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="asta_{asta_id}_debug_perizia.txt"'},
+    )
 
 
 @router.get("/aste/{asta_id}/debug-avviso", response_class=HTMLResponse)
