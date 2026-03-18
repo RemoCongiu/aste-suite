@@ -448,8 +448,11 @@ def render_asta_detail(asta) -> str:
               <div class="hero-actions">
                 <a class="btn btn-light" href="/">Dashboard</a>
                 <a class="btn btn-outline" href="/aste/{asta.id}/documenti">Documenti</a>
+                <a class="btn btn-outline" href="/aste/{asta.id}/export-scheda.pdf">Scarica scheda PDF</a>
                 <a class="btn btn-outline" href="/aste/{asta.id}/debug-perizia">Debug perizia</a>
                 <a class="btn btn-outline" href="/aste/{asta.id}/debug-avviso">Debug avviso</a>
+                <a class="btn btn-outline" href="/aste/{asta.id}/debug-perizia.txt">Scarica debug perizia TXT</a>
+                <a class="btn btn-outline" href="/aste/{asta.id}/debug-avviso.txt">Scarica debug avviso TXT</a>
               </div>
             </div>
 
