@@ -561,7 +561,7 @@ def _build_abusi_final(ai_data: dict, perizia_struct: dict, current_db_value) ->
         sections.append(f"Spese stimate di regolarizzazione: {spese_reg}")
 
     final_text = _join_paragraphs(sections)
-    return _prefer_sources_then_existing(final_text, current_db_value)
+    return _norm_multiline(final_text)
 
 
 def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db_value) -> str | None:
@@ -594,7 +594,7 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
         sections.append(f"Debiti condominiali: {debiti_cond}")
 
     final_text = _join_paragraphs(sections)
-    return _prefer_sources_then_existing(final_text, current_db_value)
+    return _norm_multiline(final_text)
 
 
 def _build_descrizione_final(ai_data: dict, perizia_struct: dict, avviso_fields: dict, current_db_value) -> str | None:
@@ -1136,7 +1136,6 @@ def analyze_perizia_for_asta(asta_id: int):
         ai_data.get("interpretazione_operativa"),
         ai_data.get("sintesi"),
         ai_data.get("riassunto_breve"),
-        getattr(asta, "sintesi", None),
     )
 
     final_note_operativi = _build_note_operativi(
