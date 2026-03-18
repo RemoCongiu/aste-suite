@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.ai_analyzer import MODEL_NAME, analyze_perizia_text_debug
+from app.ai_analyzer import MODEL_NAME, analyze_perizia_text
 from app.db import get_asta, update_asta_fields
 from app.ocr_text import extract_text_from_pdf_ocr
 from app.services_parsing import (
@@ -628,42 +628,6 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
     if formalita_commento:
         blocks.append("Commento formalità pregiudizievoli:\n" + formalita_commento)
 
-    fatto_documentale = _norm_multiline(ai_data.get("fatto_documentale"))
-    if fatto_documentale:
-        blocks.append("Fatto documentale:\n" + fatto_documentale)
-
-    interpretazione_operativa = _norm_multiline(ai_data.get("interpretazione_operativa"))
-    if interpretazione_operativa:
-        blocks.append("Interpretazione operativa:\n" + interpretazione_operativa)
-
-    livello_rischio = _norm_text(ai_data.get("livello_rischio"))
-    if livello_rischio:
-        blocks.append(f"Livello rischio: {livello_rischio}")
-
-    azione_consigliata = _norm_multiline(ai_data.get("azione_consigliata"))
-    if azione_consigliata:
-        blocks.append("Azione consigliata:\n" + azione_consigliata)
-
-    punti_forti = _ensure_list(ai_data.get("punti_forti_operazione"))
-    if punti_forti:
-        blocks.append("Punti forti operazione:\n" + _join_bullets(punti_forti))
-
-    punti_deboli = _ensure_list(ai_data.get("punti_deboli_operazione"))
-    if punti_deboli:
-        blocks.append("Punti deboli operazione:\n" + _join_bullets(punti_deboli))
-
-    verifiche_prioritarie = _ensure_list(ai_data.get("verifiche_prioritarie"))
-    if verifiche_prioritarie:
-        blocks.append("Verifiche prioritarie:\n" + _join_bullets(verifiche_prioritarie))
-
-    giudizio_finale = _norm_multiline(ai_data.get("giudizio_finale"))
-    if giudizio_finale:
-        blocks.append("Giudizio finale:\n" + giudizio_finale)
-
-    azione_consigliata_finale = _norm_multiline(ai_data.get("azione_consigliata_finale"))
-    if azione_consigliata_finale:
-        blocks.append("Azione consigliata finale:\n" + azione_consigliata_finale)
-
     if prezzo_base or offerta_minima or rilancio_minimo:
         economic_block = []
         if prezzo_base:
@@ -1070,10 +1034,6 @@ def analyze_perizia_for_asta(asta_id: int):
         "ai_result_json": json.dumps(ai_data, ensure_ascii=False, indent=2),
         "ai_summary": _first_non_empty(ai_data.get("riassunto_breve"), ai_data.get("sintesi")),
         "ai_model": MODEL_NAME,
-        "ai_prompt_text": json.dumps(ai_prompt_data, ensure_ascii=False, indent=2) if ai_prompt_data else None,
-        "ai_raw_response": ai_raw_response,
-        "avviso_parsed_json": json.dumps(avviso_fields, ensure_ascii=False, indent=2) if avviso_fields else None,
-        "perizia_parsed_json": json.dumps(perizia_struct, ensure_ascii=False, indent=2) if perizia_struct else None,
         "perizia_status": f"text_extracted:{perizia_source}" if perizia_source else "text_extracted",
         "perizia_error": None,
 

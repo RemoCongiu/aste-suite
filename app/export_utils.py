@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app.routes_analysis import _read_pdf_text_with_fallback
-from app.services_parsing import normalize_date_string, normalize_money_string
+from app.services_parsing import extract_avviso_fields_from_text, normalize_date_string, normalize_money_string
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,16 +31,6 @@ def _to_abs_path(path_value: str | None) -> Path | None:
 def _fmt_section(title: str, content: str) -> str:
     return f"\n{'=' * 24}\n{title}\n{'=' * 24}\n{content}\n"
 
-
-
-
-def _load_json_text(value: str | None):
-    if not value:
-        return None
-    try:
-        return json.loads(value)
-    except Exception:
-        return value
 
 def _json_dump(data) -> str:
     if data is None:
@@ -200,13 +190,14 @@ def build_avviso_debug_txt(asta) -> str:
     text = ""
     source = "Non disponibile"
     diagnostics = None
-    fields = _load_json_text(getattr(asta, "avviso_parsed_json", None))
+    fields = None
     warning_lines: list[str] = []
     error = None
 
     if path and path.exists():
         try:
             text, source, diagnostics = _read_pdf_text_with_fallback(path)
+            fields = extract_avviso_fields_from_text(text) if text else {}
             if not text:
                 warning_lines.append("Testo estratto vuoto dall'avviso.")
         except Exception as exc:
@@ -260,10 +251,7 @@ def build_perizia_debug_txt(asta) -> str:
     diagnostics = None
     error = None
     warning_lines: list[str] = []
-    ai_raw = getattr(asta, "ai_raw_response", None)
-    ai_prompt = getattr(asta, "ai_prompt_text", None)
-    ai_fields = _load_json_text(getattr(asta, "ai_result_json", None))
-    perizia_parsed = _load_json_text(getattr(asta, "perizia_parsed_json", None))
+    ai_raw = getattr(asta, "ai_result_json", None)
 
     if path and path.exists():
         try:
@@ -273,7 +261,10 @@ def build_perizia_debug_txt(asta) -> str:
         except Exception as exc:
             error = str(exc)
 
-    if getattr(asta, "ai_result_json", None) and ai_fields is None:
+    try:
+        ai_fields = json.loads(ai_raw) if ai_raw else None
+    except Exception:
+        ai_fields = ai_raw
         warning_lines.append("ai_result_json non parseabile come JSON.")
 
     normalized = {
@@ -308,9 +299,8 @@ def build_perizia_debug_txt(asta) -> str:
             f"Uso OCR: {'sì' if source == 'ocr' else 'no' if source != 'Non disponibile' else 'non disponibile'}",
         ])),
         _fmt_section("DIAGNOSTICA LETTURA", _json_dump(diagnostics) if diagnostics else "Non disponibile"),
-        _fmt_section("PROMPT OPENAI INVIATO", ai_prompt or "Non disponibile nel flusso attuale"),
+        _fmt_section("PROMPT OPENAI INVIATO", "Non disponibile nel flusso attuale"),
         _fmt_section("RISPOSTA AI GREZZA", ai_raw or "Non disponibile nel flusso attuale"),
-        _fmt_section("PARSING ORIGINALE PERIZIA", _json_dump(perizia_parsed) if perizia_parsed is not None else "Non disponibile"),
         _fmt_section("CAMPI AI ESTRATTI", _json_dump(ai_fields) if ai_fields is not None else "Non disponibile"),
         _fmt_section("DATI NORMALIZZATI", _json_dump(normalized)),
         _fmt_section("NOTE OPERATIVE FINALI", _v(getattr(asta, 'note_operativi', None)) or "Non disponibile"),

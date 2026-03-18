@@ -378,11 +378,6 @@ def start_import_recent_pdfs_endpoint(asta_id: int):
     if not asta:
         raise HTTPException(status_code=404, detail="Asta non trovata")
 
-    current_job = get_analysis_job(asta_id)
-    if not current_job.get("done") and current_job.get("step") not in {"idle", "errore"}:
-        logger.warning("Richiesta duplicata start-import-recent-pdfs per asta %s: %s", asta_id, current_job)
-        return {"ok": True, "message": "Import+analisi già in corso", "job": current_job}
-
     set_analysis_job(
         asta_id,
         progress=5,
@@ -392,7 +387,6 @@ def start_import_recent_pdfs_endpoint(asta_id: int):
         error=None,
     )
 
-    logger.info("Avvio thread import PDF recenti per asta %s", asta_id)
     threading.Thread(target=_run_import_pipeline_async, args=(asta_id,), daemon=True).start()
     return {"ok": True, "message": "Import+analisi avviati in background"}
 
