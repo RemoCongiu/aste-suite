@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 
 MODEL_NAME = os.getenv("OPENAI_ASTE_MODEL", "gpt-4.1-mini")
+
+__all__ = ["MODEL_NAME", "analyze_perizia_text", "analyze_perizia_text_debug"]
 
 KEY_SECTION_PATTERNS = [
     r"identificazione(?:\s+del)?\s+bene",
@@ -73,10 +76,16 @@ KEY_SECTION_PATTERNS = [
 ]
 
 
-def _client() -> OpenAI:
+def _client() -> "OpenAI":
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("Variabile OPENAI_API_KEY non impostata.")
+
+    try:
+        from openai import OpenAI
+    except ModuleNotFoundError as e:
+        raise RuntimeError("Pacchetto openai non installato.") from e
+
     return OpenAI(api_key=api_key)
 
 
@@ -205,6 +214,13 @@ def _extract_relevant_sections(text: str) -> str:
         return ""
 
     clean_text = text.replace("\r", "\n")
+    clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
+
+    # MOD: se il testo è entro una dimensione gestibile lo inviamo quasi completo,
+    # per ridurre perdita di contesto nelle sezioni legali/urbanistiche.
+    if len(clean_text) <= 220000:
+        return clean_text
+
     lower_text = clean_text.lower()
 
     windows: list[tuple[int, int]] = []
@@ -238,7 +254,7 @@ def _extract_relevant_sections(text: str) -> str:
     combined = head + "\n\n" + selected + "\n\n" + tail
     combined = re.sub(r"\n{3,}", "\n\n", combined)
 
-    return combined[:220000]
+    return combined[:300000]
 
 
 def _post_process_detail_text(value: Any) -> str | None:
@@ -251,7 +267,7 @@ def _post_process_detail_text(value: Any) -> str | None:
     return text.strip()
 
 
-def analyze_perizia_text(text: str) -> dict[str, Any]:
+def analyze_perizia_text_debug(text: str) -> dict[str, Any]:
     if not text or not text.strip():
         raise ValueError("Testo perizia vuoto.")
 
@@ -302,6 +318,11 @@ REGOLE SPECIFICHE IMPORTANTI
 - "costi_probabili" deve contenere costi o esborsi probabili ricavabili dal testo.
 - "punti_di_attenzione_investitore" deve essere pratico e concreto.
 - "valutazione_operativa" e "strategia_consigliata" devono essere utili per decidere se approfondire o meno.
+
+STILE DI SCRITTURA RICHIESTO
+- Linguaggio chiaro, concreto e leggibile da un investitore non tecnico.
+- Frasi brevi, niente tecnicismi inutili.
+- Evidenzia in modo esplicito: rischi legali, rischi urbanistici e impatto economico.
 """
 
     user_prompt = f"""
@@ -363,7 +384,10 @@ Restituisci un JSON valido con questa struttura esatta:
     "strategia_consigliata": null,
     "rischio_operazione": null,
     "vendibilita_potenziale": null,
-    "note_investitore": null
+    "note_investitore": null,
+    "rischi_legali": null,
+    "rischi_urbanistici": null,
+    "formalita_pregiudizievoli_commento": null
   }}
 }}
 
@@ -446,19 +470,31 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
         "spese_stimate_regolarizzazione": _normalize_scalar(dati_documentali.get("spese_stimate_regolarizzazione")),
         "prezzo_base": _normalize_scalar(dati_documentali.get("prezzo_base")),
         "offerta_minima": _normalize_scalar(dati_documentali.get("offerta_minima")),
-
         "sintesi": _post_process_detail_text(lettura_investitore.get("sintesi")),
         "riassunto_breve": _normalize_scalar(lettura_investitore.get("riassunto_breve")),
         "criticita_principali": _ensure_list(lettura_investitore.get("criticita_principali")),
         "costi_probabili": _ensure_list(lettura_investitore.get("costi_probabili")),
-        "punti_di_attenzione_investitore": _ensure_list(
-            lettura_investitore.get("punti_di_attenzione_investitore")
-        ),
+        "punti_di_attenzione_investitore": _ensure_list(lettura_investitore.get("punti_di_attenzione_investitore")),
         "valutazione_operativa": _post_process_detail_text(lettura_investitore.get("valutazione_operativa")),
         "strategia_consigliata": _post_process_detail_text(lettura_investitore.get("strategia_consigliata")),
         "rischio_operazione": _ensure_risk(lettura_investitore.get("rischio_operazione")),
         "vendibilita_potenziale": _normalize_scalar(lettura_investitore.get("vendibilita_potenziale")),
         "note_investitore": _post_process_detail_text(lettura_investitore.get("note_investitore")),
+        "rischi_legali": _post_process_detail_text(lettura_investitore.get("rischi_legali")),
+        "rischi_urbanistici": _post_process_detail_text(lettura_investitore.get("rischi_urbanistici")),
+        "formalita_pregiudizievoli_commento": _post_process_detail_text(lettura_investitore.get("formalita_pregiudizievoli_commento")),
     }
 
-    return normalized
+    return {
+        "data": normalized,
+        "prompt": {
+            "system": system_prompt.strip(),
+            "user": user_prompt.strip(),
+            "input_excerpt": trimmed_text,
+        },
+        "raw_response": raw_text,
+    }
+
+
+def analyze_perizia_text(text: str) -> dict[str, Any]:
+    return analyze_perizia_text_debug(text)["data"]
