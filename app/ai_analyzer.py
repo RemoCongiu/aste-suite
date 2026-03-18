@@ -204,14 +204,7 @@ def _clean_tribunale(value: Any) -> str | None:
 
 
 def _extract_relevant_sections(text: str) -> str:
-    """
-    Costruisce un testo più utile da inviare a OpenAI:
-    - testa iniziale della perizia
-    - sezioni intercettate da pattern chiave
-    - coda finale con stima / conclusioni / riepiloghi
-    """
-    if not text or not text.strip():
-        return ""
+    return prepare_perizia_text_for_ai(text)
 
     clean_text = text.replace("\r", "\n")
     clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
@@ -223,40 +216,6 @@ def _extract_relevant_sections(text: str) -> str:
 
     lower_text = clean_text.lower()
 
-    windows: list[tuple[int, int]] = []
-
-    for pattern in KEY_SECTION_PATTERNS:
-        for m in re.finditer(pattern, lower_text, flags=re.IGNORECASE):
-            start = max(0, m.start() - 1400)
-            end = min(len(clean_text), m.end() + 9000)
-            windows.append((start, end))
-
-    head = clean_text[:35000]
-    tail = clean_text[-30000:] if len(clean_text) > 30000 else ""
-
-    if not windows:
-        combined = head + "\n\n" + tail
-        combined = re.sub(r"\n{3,}", "\n\n", combined)
-        return combined[:220000]
-
-    windows.sort()
-    merged: list[list[int]] = []
-
-    for start, end in windows:
-        if not merged or start > merged[-1][1]:
-            merged.append([start, end])
-        else:
-            merged[-1][1] = max(merged[-1][1], end)
-
-    chunks = [clean_text[s:e].strip() for s, e in merged if e > s]
-    selected = "\n\n".join(chunk for chunk in chunks if chunk)
-
-    combined = head + "\n\n" + selected + "\n\n" + tail
-    combined = re.sub(r"\n{3,}", "\n\n", combined)
-
-    return combined[:300000]
-
-
 def _post_process_detail_text(value: Any) -> str | None:
     v = _normalize_multiline_scalar(value)
     if not v:
@@ -265,6 +224,45 @@ def _post_process_detail_text(value: Any) -> str | None:
     text = str(v)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _normalize_confidence(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    v = str(value).strip().lower()
+    if "alta" in v:
+        return "alta"
+    if "media" in v:
+        return "media"
+    if "bassa" in v:
+        return "bassa"
+    return None
+
+
+def _normalize_source(value: Any) -> str | None:
+    v = _normalize_scalar(value)
+    if not v:
+        return None
+    text = str(v).lower()
+    allowed = {"avviso", "perizia", "entrambi", "parser", "inferenza"}
+    return text if text in allowed else text
+
+
+    return combined[:300000]
+
+    lowered = text.lower()
+    if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in AI_COPY_PATTERNS):
+        cleaned = text
+        for pattern in AI_COPY_PATTERNS:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip(" \n:;-")
+        text = cleaned or None
+
+    if text and len(text.splitlines()) >= 8 and len(re.findall(r"(?:^|\n)- ", text)) >= 5:
+        return None
+
+    return text
 
 
 def analyze_perizia_text_debug(text: str) -> dict[str, Any]:
@@ -285,9 +283,10 @@ Sei un analista senior di aste immobiliari italiane specializzato in:
 Devi lavorare con rigore, prudenza e massima utilità operativa.
 
 OBIETTIVO
-Analizzare una perizia immobiliare e restituire:
-1) dati documentali realmente presenti nel testo
-2) una lettura critica molto utile per un investitore immobiliare
+Analizzare la documentazione di un'asta immobiliare e restituire:
+1) campi oggettivi consolidati, scegliendo il valore più attendibile
+2) una vera analisi professionale utile per investitore immobiliare
+3) un giudizio operativo finale
 
 REGOLE FONDAMENTALI
 - Non inventare dati.
@@ -337,45 +336,32 @@ TESTO PERIZIA:
 Restituisci un JSON valido con questa struttura esatta:
 
 {{
-  "dati_documentali": {{
-    "rge": null,
-    "tribunale": null,
-    "lotto": null,
-    "citta": null,
-    "indirizzo": "via/piazza + numero civico se presente",
-    "descrizione_immobile": null,
-    "tipologia_immobile": null,
-    "superficie": null,
-    "catasto": null,
-    "foglio": null,
-    "mappale": null,
-    "subalterno": null,
-    "categoria_catastale": null,
-    "classe_catastale": null,
-    "rendita_catastale": null,
-    "proprietario": null,
-    "provenienza": null,
-    "occupazione": null,
-    "stato_occupazione_dettaglio": null,
-    "valore_perizia": null,
-    "creditore_procedente": null,
-    "pregiudizievoli": null,
-    "pregiudizievoli_dettaglio": null,
-    "vincoli_oneri": null,
-    "abusi": null,
-    "abusi_dettaglio": null,
-    "stato_urbanistico": null,
-    "stato_catastale": null,
-    "stato_manutentivo": null,
-    "agibilita": null,
-    "impianti": null,
-    "debiti_condominiali": null,
-    "conformita_catastale": null,
-    "conformita_urbanistica": null,
-    "spese_stimate_regolarizzazione": null,
-    "data_asta": null,
-    "prezzo_base": null,
-    "offerta_minima": null
+  "campi_oggettivi": {{
+    "tribunale": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "rge": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "lotto": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "data_asta": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "valore_perizia": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "prezzo_base": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "offerta_minima": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "rilancio_minimo": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "comune": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "indirizzo": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "foglio": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "particella": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "subalterno": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "categoria_catastale": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "occupazione": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "creditore_procedente": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}},
+    "proprietario": {{"valore": null, "fonte": null, "confidenza": null, "warning": null}}
+  }},
+  "analisi_qualitativa": {{
+    "descrizione_immobile": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
+    "stato_manutentivo": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
+    "urbanistica_catasto": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
+    "abusi_difformita_sanabilita": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
+    "pregiudizievoli": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}},
+    "occupazione_liberazione": {{"fatto_documentale": null, "analisi_professionale": null, "rischio": null, "impatto_operativo": null, "azione_consigliata": null}}
   }},
   "lettura_investitore": {{
     "sintesi": null,
@@ -421,6 +407,12 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
 - "azione_consigliata_finale" = esito finale tipo approfondire / fare offerta prudente / evitare.
 """
 
+    prompt_payload = {
+        "system": system_prompt.strip(),
+        "user": user_prompt.strip(),
+        "input_excerpt": trimmed_text,
+    }
+
     try:
         response = client.responses.create(
             model=MODEL_NAME,
@@ -431,47 +423,90 @@ ISTRUZIONI AGGIUNTIVE IMPORTANTI:
             temperature=0.1,
         )
     except Exception as e:
-        raise RuntimeError(f"Errore chiamata OpenAI: {e}") from e
+        raise AIAnalyzerError(f"Errore chiamata OpenAI: {e}", prompt=prompt_payload) from e
 
     raw_text = response.output_text
-    data = _safe_json_loads(raw_text)
+    try:
+        data = _safe_json_loads(raw_text)
+    except Exception as e:
+        raise AIAnalyzerError(
+            f"Risposta AI non valida: {e}",
+            prompt=prompt_payload,
+            raw_response=raw_text,
+        ) from e
 
     dati_documentali = data.get("dati_documentali", {}) or {}
     lettura_investitore = data.get("lettura_investitore", {}) or {}
+    campi_oggettivi = data.get("campi_oggettivi", {}) or {}
+    analisi_qualitativa = data.get("analisi_qualitativa", {}) or {}
+    giudizio_investitore = data.get("giudizio_investitore", {}) or {}
+
+    normalized_objective_fields = {
+        field: _normalize_objective_struct(campi_oggettivi.get(field))
+        for field in OBJECTIVE_FIELD_NAMES
+    }
+
+    normalized_qualitative = {
+        name: _normalize_qualitative_block(analisi_qualitativa.get(name))
+        for name in (
+            "descrizione_immobile",
+            "stato_manutentivo",
+            "urbanistica_catasto",
+            "abusi_difformita_sanabilita",
+            "pregiudizievoli",
+            "occupazione_liberazione",
+        )
+    }
+
+    livello_rischio = (
+        _ensure_risk(giudizio_investitore.get("livello_rischio"))
+        or _ensure_risk(lettura_investitore.get("livello_rischio"))
+        or _ensure_risk(lettura_investitore.get("rischio_operazione"))
+    )
 
     normalized: dict[str, Any] = {
-        "rge": _normalize_scalar(dati_documentali.get("rge")),
-        "tribunale": _clean_tribunale(dati_documentali.get("tribunale")),
-        "lotto": _normalize_scalar(dati_documentali.get("lotto")),
-        "data_asta": _normalize_scalar(dati_documentali.get("data_asta")),
-        "citta": _normalize_scalar(dati_documentali.get("citta")),
-        "indirizzo": _clean_address(dati_documentali.get("indirizzo")),
-        "descrizione_immobile": _post_process_detail_text(dati_documentali.get("descrizione_immobile")),
+        "campi_oggettivi": normalized_objective_fields,
+        "analisi_qualitativa": normalized_qualitative,
+        "giudizio_investitore": {
+            "punti_forti_operazione": _ensure_list(giudizio_investitore.get("punti_forti_operazione")),
+            "punti_deboli_operazione": _ensure_list(giudizio_investitore.get("punti_deboli_operazione")),
+            "verifiche_prioritarie": _ensure_list(giudizio_investitore.get("verifiche_prioritarie")),
+            "giudizio_finale": _sanitize_ai_narrative_text(giudizio_investitore.get("giudizio_finale")),
+            "azione_consigliata_finale": _sanitize_ai_narrative_text(giudizio_investitore.get("azione_consigliata_finale")),
+            "livello_rischio": livello_rischio,
+        },
+        "rge": _normalize_scalar((normalized_objective_fields.get("rge") or {}).get("valore") or dati_documentali.get("rge")),
+        "tribunale": _clean_tribunale((normalized_objective_fields.get("tribunale") or {}).get("valore") or dati_documentali.get("tribunale")),
+        "lotto": _normalize_scalar((normalized_objective_fields.get("lotto") or {}).get("valore") or dati_documentali.get("lotto")),
+        "data_asta": _normalize_scalar((normalized_objective_fields.get("data_asta") or {}).get("valore") or dati_documentali.get("data_asta")),
+        "citta": _normalize_scalar((normalized_objective_fields.get("comune") or {}).get("valore") or (normalized_objective_fields.get("citta") or {}).get("valore") or dati_documentali.get("citta")),
+        "indirizzo": _clean_address((normalized_objective_fields.get("indirizzo") or {}).get("valore") or dati_documentali.get("indirizzo")),
+        "descrizione_immobile": _sanitize_ai_narrative_text(dati_documentali.get("descrizione_immobile")),
         "tipologia_immobile": _normalize_scalar(dati_documentali.get("tipologia_immobile")),
         "superficie": _normalize_scalar(dati_documentali.get("superficie")),
         "catasto": _normalize_scalar(dati_documentali.get("catasto")),
-        "foglio": _normalize_scalar(dati_documentali.get("foglio")),
-        "mappale": _normalize_scalar(dati_documentali.get("mappale")),
-        "subalterno": _normalize_scalar(dati_documentali.get("subalterno")),
-        "categoria_catastale": _normalize_scalar(dati_documentali.get("categoria_catastale")),
+        "foglio": _normalize_scalar((normalized_objective_fields.get("foglio") or {}).get("valore") or dati_documentali.get("foglio")),
+        "mappale": _normalize_scalar((normalized_objective_fields.get("mappale") or {}).get("valore") or (normalized_objective_fields.get("particella") or {}).get("valore") or dati_documentali.get("mappale")),
+        "subalterno": _normalize_scalar((normalized_objective_fields.get("subalterno") or {}).get("valore") or dati_documentali.get("subalterno")),
+        "categoria_catastale": _normalize_scalar((normalized_objective_fields.get("categoria_catastale") or {}).get("valore") or dati_documentali.get("categoria_catastale")),
         "classe_catastale": _normalize_scalar(dati_documentali.get("classe_catastale")),
         "rendita_catastale": _normalize_scalar(dati_documentali.get("rendita_catastale")),
-        "proprietario": _normalize_scalar(dati_documentali.get("proprietario")),
+        "proprietario": _normalize_scalar((normalized_objective_fields.get("proprietario") or {}).get("valore") or dati_documentali.get("proprietario")),
         "provenienza": _normalize_scalar(dati_documentali.get("provenienza")),
-        "occupazione": _normalize_scalar(dati_documentali.get("occupazione")),
-        "stato_occupazione_dettaglio": _post_process_detail_text(dati_documentali.get("stato_occupazione_dettaglio")),
-        "valore_perizia": _normalize_scalar(dati_documentali.get("valore_perizia")),
-        "creditore_procedente": _normalize_scalar(dati_documentali.get("creditore_procedente")),
-        "pregiudizievoli": _normalize_scalar(dati_documentali.get("pregiudizievoli")),
-        "pregiudizievoli_dettaglio": _post_process_detail_text(dati_documentali.get("pregiudizievoli_dettaglio")),
-        "vincoli_oneri": _post_process_detail_text(dati_documentali.get("vincoli_oneri")),
-        "abusi": _normalize_scalar(dati_documentali.get("abusi")),
-        "abusi_dettaglio": _post_process_detail_text(dati_documentali.get("abusi_dettaglio")),
-        "stato_urbanistico": _post_process_detail_text(dati_documentali.get("stato_urbanistico")),
-        "stato_catastale": _post_process_detail_text(dati_documentali.get("stato_catastale")),
-        "stato_manutentivo": _normalize_scalar(dati_documentali.get("stato_manutentivo")),
+        "occupazione": _normalize_scalar((normalized_objective_fields.get("occupazione") or {}).get("valore") or dati_documentali.get("occupazione")),
+        "stato_occupazione_dettaglio": _sanitize_ai_narrative_text(dati_documentali.get("stato_occupazione_dettaglio")),
+        "valore_perizia": _normalize_scalar((normalized_objective_fields.get("valore_perizia") or {}).get("valore") or dati_documentali.get("valore_perizia")),
+        "creditore_procedente": _normalize_scalar((normalized_objective_fields.get("creditore_procedente") or {}).get("valore") or dati_documentali.get("creditore_procedente")),
+        "pregiudizievoli": _sanitize_ai_narrative_text(dati_documentali.get("pregiudizievoli")),
+        "pregiudizievoli_dettaglio": _sanitize_ai_narrative_text(dati_documentali.get("pregiudizievoli_dettaglio")),
+        "vincoli_oneri": _sanitize_ai_narrative_text(dati_documentali.get("vincoli_oneri")),
+        "abusi": _sanitize_ai_narrative_text(dati_documentali.get("abusi")),
+        "abusi_dettaglio": _sanitize_ai_narrative_text(dati_documentali.get("abusi_dettaglio")),
+        "stato_urbanistico": _sanitize_ai_narrative_text(dati_documentali.get("stato_urbanistico")),
+        "stato_catastale": _sanitize_ai_narrative_text(dati_documentali.get("stato_catastale")),
+        "stato_manutentivo": _sanitize_ai_narrative_text(dati_documentali.get("stato_manutentivo")),
         "agibilita": _normalize_scalar(dati_documentali.get("agibilita")),
-        "impianti": _post_process_detail_text(dati_documentali.get("impianti")),
+        "impianti": _sanitize_ai_narrative_text(dati_documentali.get("impianti")),
         "debiti_condominiali": _normalize_scalar(dati_documentali.get("debiti_condominiali")),
         "conformita_catastale": _normalize_scalar(dati_documentali.get("conformita_catastale")),
         "conformita_urbanistica": _normalize_scalar(dati_documentali.get("conformita_urbanistica")),

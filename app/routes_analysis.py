@@ -583,6 +583,72 @@ def _build_descrizione_final(ai_data: dict, perizia_struct: dict, avviso_fields:
     return _norm_multiline(best)
 
 
+def _get_ai_objective_field(ai_data: dict, field: str) -> dict | None:
+    campi = ai_data.get("campi_oggettivi")
+    if not isinstance(campi, dict):
+        return None
+    value = campi.get(field)
+    return value if isinstance(value, dict) else None
+
+
+def _get_ai_objective_value(ai_data: dict, field: str):
+    item = _get_ai_objective_field(ai_data, field)
+    if not item:
+        return None
+    return _norm_text(item.get("valore"))
+
+
+def _collect_ai_objective_warnings(ai_data: dict) -> list[str]:
+    warnings = []
+    campi = ai_data.get("campi_oggettivi")
+    if not isinstance(campi, dict):
+        return warnings
+
+    for field, payload in campi.items():
+        if not isinstance(payload, dict):
+            continue
+        warning = _norm_multiline(payload.get("warning"))
+        value = _norm_text(payload.get("valore"))
+        fonte = _norm_text(payload.get("fonte"))
+        confidenza = _norm_text(payload.get("confidenza"))
+        if warning:
+            details = []
+            if value:
+                details.append(f"valore scelto={value}")
+            if fonte:
+                details.append(f"fonte={fonte}")
+            if confidenza:
+                details.append(f"confidenza={confidenza}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            warnings.append(f"{field}: {warning}{suffix}")
+
+    return warnings
+
+
+def _build_ai_analysis_input(perizia_text: str, asta, avviso_fields: dict) -> str:
+    context = {
+        "pagina_o_db": {
+            "tribunale": getattr(asta, "tribunale", None),
+            "rge": getattr(asta, "rge", None),
+            "lotto": getattr(asta, "lotto", None),
+            "data_asta": getattr(asta, "data_asta", None),
+            "prezzo_base": getattr(asta, "prezzo_base", None),
+            "offerta_minima": getattr(asta, "offerta_minima", None),
+            "rilancio_minimo": getattr(asta, "rilancio_minimo", None),
+            "citta": getattr(asta, "citta", None),
+            "indirizzo": getattr(asta, "indirizzo", None),
+        },
+        "avviso_parser": avviso_fields or {},
+    }
+    return (
+        "CONTESTO STRUTTURATO AGGIUNTIVO (usa questo blocco per consolidare i campi oggettivi, "
+        "risolvere conflitti tra fonti e scegliere il valore piu' attendibile):\n"
+        f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+        "TESTO PERIZIA PULITO:\n"
+        f"{perizia_text}"
+    )
+
+
 def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rilancio_minimo) -> str | None:
     criticita = _ensure_list(ai_data.get("criticita_principali"))
     costi = _ensure_list(ai_data.get("costi_probabili"))
@@ -920,14 +986,16 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_rilancio_minimo = normalize_money_string(
-        _prefer_existing_then_sources(
-            getattr(asta, "rilancio_minimo", None),
+        _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "rilancio_minimo"),
             avviso_fields.get("rilancio_minimo"),
+            getattr(asta, "rilancio_minimo", None),
         )
     )
 
     final_valore_perizia = normalize_money_string(
         _prefer_sources_then_existing(
+            _get_ai_objective_value(ai_data, "valore_perizia"),
             ai_data.get("valore_perizia"),
             perizia_struct.get("valore_perizia"),
             avviso_fields.get("valore_perizia"),
@@ -936,6 +1004,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_occupazione = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "occupazione"),
         ai_data.get("occupazione"),
         ai_data.get("stato_occupazione_dettaglio"),
         perizia_struct.get("occupazione"),
@@ -951,6 +1020,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_foglio = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "foglio"),
         ai_data.get("foglio"),
         perizia_struct.get("foglio"),
         avviso_fields.get("foglio"),
@@ -958,6 +1028,8 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_mappale = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "particella"),
+        _get_ai_objective_value(ai_data, "mappale"),
         ai_data.get("mappale"),
         perizia_struct.get("mappale"),
         avviso_fields.get("mappale"),
@@ -965,6 +1037,7 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_subalterno = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "subalterno"),
         ai_data.get("subalterno"),
         perizia_struct.get("subalterno"),
         avviso_fields.get("subalterno"),
@@ -973,6 +1046,7 @@ def analyze_perizia_for_asta(asta_id: int):
     final_subalterno = normalize_subalterni(final_subalterno)
 
     final_categoria_catastale = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "categoria_catastale"),
         ai_data.get("categoria_catastale"),
         perizia_struct.get("categoria_catastale"),
         avviso_fields.get("categoria_catastale"),
@@ -1019,14 +1093,23 @@ def analyze_perizia_for_asta(asta_id: int):
         final_note_operativi = _join_paragraphs([final_note_operativi or "", warning_block])
 
     final_proprietario = _prefer_sources_then_existing(
+        _get_ai_objective_value(ai_data, "proprietario"),
         ai_data.get("proprietario"),
         getattr(asta, "proprietario", None),
     )
 
     final_creditore = _prefer_existing_then_sources(
-        getattr(asta, "creditore_procedente", None),
+        _get_ai_objective_value(ai_data, "creditore_procedente"),
         ai_data.get("creditore_procedente"),
+        getattr(asta, "creditore_procedente", None),
     )
+
+    objective_warnings = _collect_ai_objective_warnings(ai_data)
+    if objective_warnings:
+        final_note_operativi = _join_paragraphs([
+            final_note_operativi or "",
+            "Warning campi oggettivi scelti dall'AI:\n" + "\n".join(f"- {item}" for item in objective_warnings),
+        ])
 
     update_fields = {
         "ai_status": "done",
