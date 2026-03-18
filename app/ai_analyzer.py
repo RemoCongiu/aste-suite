@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 MODEL_NAME = os.getenv("OPENAI_ASTE_MODEL", "gpt-4.1-mini")
 
+__all__ = ["MODEL_NAME", "analyze_perizia_text", "analyze_perizia_text_debug"]
+
 KEY_SECTION_PATTERNS = [
     r"identificazione(?:\s+del)?\s+bene",
     r"descrizione(?:\s+del)?\s+bene",
