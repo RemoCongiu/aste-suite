@@ -1,5 +1,6 @@
+import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlmodel import Field, SQLModel, Session, create_engine, select
@@ -81,6 +82,34 @@ class Asta(SQLModel, table=True):
 engine = create_engine("sqlite:///aste.db")
 
 
+def _normalize_db_field_value(value: Any) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            joined = ", ".join(item.strip() for item in value if item and item.strip())
+            return joined or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"nd", "n.d.", "null", "none", "-"}:
+            return None
+        return normalized
+
+    return str(value).strip() or None
+
+
 def _ensure_extra_columns() -> None:
     with engine.begin() as conn:
         existing_columns = {
@@ -159,7 +188,7 @@ def update_asta_fields(asta_id: int, **fields) -> Optional[Asta]:
 
         for k, v in fields.items():
             if hasattr(asta, k):
-                setattr(asta, k, v)
+                setattr(asta, k, _normalize_db_field_value(v))
 
         session.add(asta)
         session.commit()

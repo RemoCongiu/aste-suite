@@ -8,6 +8,9 @@ from pathlib import Path
 from app.ocr_text import extract_text_from_pdf_ocr
 from app.pdf_text import extract_text_from_pdf, extract_text_with_diagnostics
 
+# =========================================================
+# NORMALIZZAZIONE BASE
+# =========================================================
 
 # =========================================================
 # NORMALIZZAZIONE BASE
