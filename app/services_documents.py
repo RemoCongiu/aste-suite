@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -10,11 +11,20 @@ from app.services_parsing import (
     extract_avviso_fields_from_text,
     extract_structured_fields_from_perizia_text,
 )
-from app.pdf_text import extract_text_from_pdf
 from app.ocr_text import extract_text_from_pdf_ocr
 
 
+logger = logging.getLogger(__name__)
+MIN_TEXT_FOR_AI_ANALYSIS = 900
+
+
 def read_pdf_text_with_fallback(pdf_path: Path) -> str:
+    """
+    Lettura robusta testo PDF.
+    - usa pypdf con diagnostica
+    - forza OCR se testo vuoto o troppo corto
+    """
+    diag = None
     try:
         from app.pdf_text import extract_text_with_diagnostics
 
@@ -22,10 +32,22 @@ def read_pdf_text_with_fallback(pdf_path: Path) -> str:
         text = (diag.get("text") or "").strip()
         quality = diag.get("quality")
 
-        if text and quality == "good":
+        # MOD: se il testo è troppo corto lo consideriamo insufficiente e forziamo OCR.
+        if text and quality == "good" and len(text) >= MIN_TEXT_FOR_AI_ANALYSIS:
             return text
+
+        if not text:
+            logger.warning("PDF senza testo da pypdf: %s", pdf_path)
+        elif len(text) < MIN_TEXT_FOR_AI_ANALYSIS:
+            logger.warning(
+                "PDF con testo corto (%s chars), forzo OCR: %s",
+                len(text),
+                pdf_path,
+            )
+        else:
+            logger.info("PDF quality=%s, provo OCR: %s", quality, pdf_path)
     except Exception:
-        pass
+        logger.exception("Errore estrazione pypdf: %s", pdf_path)
 
     try:
         ocr_result = extract_text_from_pdf_ocr(pdf_path)
@@ -39,14 +61,17 @@ def read_pdf_text_with_fallback(pdf_path: Path) -> str:
             if ocr_text:
                 return ocr_text
     except Exception:
-        pass
+        logger.exception("Errore OCR su PDF: %s", pdf_path)
 
     try:
-        from app.pdf_text import extract_text_with_diagnostics
+        if isinstance(diag, dict):
+            return (diag.get("text") or "").strip()
 
-        diag = extract_text_with_diagnostics(pdf_path)
-        return (diag.get("text") or "").strip()
+        from app.pdf_text import extract_text_with_diagnostics
+        fallback_diag = extract_text_with_diagnostics(pdf_path)
+        return (fallback_diag.get("text") or "").strip()
     except Exception:
+        logger.exception("Fallback finale estrazione testo fallito: %s", pdf_path)
         return ""
 
 
@@ -283,6 +308,28 @@ def get_downloads_dir() -> Path:
     return Path.home() / "Downloads"
 
 
+def _format_candidate_timestamp(file_path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(sep=" ", timespec="seconds")
+    except Exception:
+        return "mtime_unavailable"
+
+
+def _guess_recent_pdf_kind_from_name(pdf_path: Path) -> str | None:
+    name = pdf_path.name.lower()
+
+    perizia_tokens = ("perizia", "ctu", "elaborato", "stima")
+    avviso_tokens = ("avviso", "ordinanza", "vendita", "delega", "esperimento")
+
+    if any(token in name for token in perizia_tokens):
+        return "perizia"
+
+    if any(token in name for token in avviso_tokens):
+        return "avviso"
+
+    return None
+
+
 def is_pdf_download_complete(file_path: Path) -> bool:
     if not file_path.exists():
         return False
@@ -304,11 +351,14 @@ def collect_recent_pdf_candidates(
 ) -> list[Path]:
     downloads_dir = get_downloads_dir()
     if not downloads_dir.exists():
+        logger.warning("Cartella Download non trovata: %s", downloads_dir)
         return []
 
     now_ts = datetime.now().timestamp()
     window_seconds = minutes * 60
+    cutoff_ts = now_ts - window_seconds
     candidates = []
+    all_pdf_rows = []
 
     for file_path in downloads_dir.iterdir():
         if not file_path.is_file():
@@ -317,14 +367,16 @@ def collect_recent_pdf_candidates(
         if file_path.suffix.lower() != ".pdf":
             continue
 
-        name_lower = file_path.name.lower()
-        if name_lower.endswith(".crdownload"):
-            continue
-
         try:
-            mtime = file_path.stat().st_mtime
+            stat = file_path.stat()
+            mtime = stat.st_mtime
+            size = stat.st_size
         except Exception:
             continue
+
+        all_pdf_rows.append(
+            f"{file_path.name} (mtime={datetime.fromtimestamp(mtime).isoformat(sep=' ', timespec='seconds')}, size={size})"
+        )
 
         age = now_ts - mtime
         if age < 0 or age > window_seconds:
@@ -336,7 +388,22 @@ def collect_recent_pdf_candidates(
         candidates.append(file_path)
 
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[:max_files]
+    selected = candidates[:max_files]
+
+    logger.info(
+        "Ricerca PDF recenti in Download: dir=%s cutoff=%s total_pdf=%s candidates=%s all_pdfs=[%s] selected=[%s]",
+        downloads_dir,
+        datetime.fromtimestamp(cutoff_ts).isoformat(sep=" ", timespec="seconds"),
+        len(all_pdf_rows),
+        len(selected),
+        " | ".join(all_pdf_rows) if all_pdf_rows else "none",
+        " | ".join(
+            f"{path.name} (mtime={_format_candidate_timestamp(path)}, size={path.stat().st_size})"
+            for path in selected
+        ) if selected else "none",
+    )
+
+    return selected
 
 
 # =========================================================
@@ -358,12 +425,26 @@ def classify_recent_pdfs(pdf_paths: list[Path]):
 
     for pdf_path in pdf_paths:
         doc_type, score_perizia, score_avviso = classify_pdf_document(pdf_path)
+        name_hint = _guess_recent_pdf_kind_from_name(pdf_path)
+        file_size = pdf_path.stat().st_size
+
+        if name_hint == "perizia":
+            score_perizia += 3
+        elif name_hint == "avviso":
+            score_avviso += 3
+
+        effective_type = doc_type
+        if score_perizia > score_avviso:
+            effective_type = "perizia"
+        elif score_avviso > score_perizia:
+            effective_type = "avviso"
 
         debug_rows.append(
-            f"{pdf_path.name} => tipo={doc_type}, score_perizia={score_perizia}, score_avviso={score_avviso}"
+            f"{pdf_path.name} => tipo={doc_type}, tipo_effettivo={effective_type}, name_hint={name_hint}, size={file_size}, "
+            f"mtime={_format_candidate_timestamp(pdf_path)}, score_perizia={score_perizia}, score_avviso={score_avviso}"
         )
 
-        scored.append((pdf_path, doc_type, score_perizia, score_avviso))
+        scored.append((pdf_path, effective_type, score_perizia, score_avviso))
 
     for pdf_path, doc_type, score_perizia, score_avviso in scored:
         if doc_type == "perizia" and perizia_path is None:
@@ -403,7 +484,13 @@ def copy_recent_pdf_into_project(
     dest = destination_dir / filename
     final_dest = make_unique_path(dest)
 
-    shutil.move(str(source_pdf), str(final_dest))
+    shutil.copy2(str(source_pdf), str(final_dest))
+    logger.info(
+        "Copiato PDF da Download nel progetto: source=%s dest=%s tipo=%s",
+        source_pdf,
+        final_dest,
+        tipo,
+    )
     return str(final_dest.relative_to(project_root))
 
 
@@ -419,6 +506,33 @@ def import_recent_downloaded_pdfs_for_asta(
 
     project_root = Path(__file__).resolve().parents[1]
     perizie_dir, avvisi_dir = ensure_data_dirs(project_root)
+    downloads_dir = get_downloads_dir()
+
+    existing_perizia = getattr(asta, "perizia_file_path", None)
+    existing_avviso = getattr(asta, "avviso_file_path", None)
+    existing_perizia_path = (project_root / existing_perizia) if existing_perizia else None
+    existing_avviso_path = (project_root / existing_avviso) if existing_avviso else None
+
+    if (
+        existing_perizia_path
+        and existing_avviso_path
+        and existing_perizia_path.exists()
+        and existing_avviso_path.exists()
+    ):
+        logger.warning(
+            "Import PDF recenti richiesto ma documenti gia' presenti per asta %s: perizia=%s avviso=%s",
+            asta_id,
+            existing_perizia_path,
+            existing_avviso_path,
+        )
+        return True, "Import già eseguito: documenti già presenti nel progetto, nessuna nuova copia necessaria."
+
+    logger.info(
+        "Avvio import PDF recenti per asta %s da Download=%s finestra_minuti=%s",
+        asta_id,
+        downloads_dir,
+        minutes,
+    )
 
     recent_pdfs = collect_recent_pdf_candidates(minutes=minutes, max_files=10)
 
@@ -426,31 +540,48 @@ def import_recent_downloaded_pdfs_for_asta(
         found = len(recent_pdfs)
         return (
             False,
-            f"Trovati solo {found} PDF negli ultimi {minutes} minuti nella cartella Download. "
-            f"Scarica avviso e perizia, poi riprova.",
+            f"Nessun import eseguito: trovati solo {found} PDF recenti negli ultimi {minutes} minuti "
+            f"in {downloads_dir}. Scarica avviso e perizia, poi riprova.",
         )
 
     perizia_source, avviso_source, debug_message = classify_recent_pdfs(recent_pdfs)
 
     if not perizia_source or not avviso_source:
-        return False, f"Impossibile classificare i PDF recenti. Debug: {debug_message}"
+        logger.warning(
+            "Classificazione PDF recenti fallita per asta %s. Debug=%s",
+            asta_id,
+            debug_message,
+        )
+        return False, f"PDF recenti trovati ma classificazione fallita. Debug: {debug_message}"
 
-    # Copia/sposta nel progetto usando il naming DB-based iniziale
-    perizia_rel_path = copy_recent_pdf_into_project(
-        source_pdf=perizia_source,
-        destination_dir=perizie_dir,
-        asta=asta,
-        tipo="perizia",
-        project_root=project_root,
+    logger.info(
+        "PDF recenti selezionati per asta %s: perizia=%s (size=%s) avviso=%s (size=%s)",
+        asta_id,
+        perizia_source,
+        perizia_source.stat().st_size,
+        avviso_source,
+        avviso_source.stat().st_size,
     )
 
-    avviso_rel_path = copy_recent_pdf_into_project(
-        source_pdf=avviso_source,
-        destination_dir=avvisi_dir,
-        asta=asta,
-        tipo="avviso",
-        project_root=project_root,
-    )
+    try:
+        perizia_rel_path = copy_recent_pdf_into_project(
+            source_pdf=perizia_source,
+            destination_dir=perizie_dir,
+            asta=asta,
+            tipo="perizia",
+            project_root=project_root,
+        )
+
+        avviso_rel_path = copy_recent_pdf_into_project(
+            source_pdf=avviso_source,
+            destination_dir=avvisi_dir,
+            asta=asta,
+            tipo="avviso",
+            project_root=project_root,
+        )
+    except Exception as e:
+        logger.exception("Errore copia PDF recenti per asta %s", asta_id)
+        return False, f"PDF recenti trovati e classificati, ma copia nel progetto fallita: {e}"
 
     updates = {
         "perizia_file_path": perizia_rel_path,
@@ -463,39 +594,45 @@ def import_recent_downloaded_pdfs_for_asta(
         "avviso_error": None,
     }
 
-    update_asta_fields(asta_id, **updates)
+    try:
+        update_asta_fields(asta_id, **updates)
+    except Exception as e:
+        logger.exception("Errore aggiornamento DB dopo copia PDF per asta %s", asta_id)
+        return False, f"PDF copiati nel progetto ma aggiornamento DB fallito: {e}"
 
-    # Prova a classificare e leggere anche i documenti già spostati
-    perizia_full_path = project_root / perizia_rel_path
-    avviso_full_path = project_root / avviso_rel_path
+    try:
+        perizia_full_path = project_root / perizia_rel_path
+        avviso_full_path = project_root / avviso_rel_path
 
-    perizia_tipo, perizia_new_path, perizia_fields = classify_and_rename_pdf(perizia_full_path)
-    avviso_tipo, avviso_new_path, avviso_fields = classify_and_rename_pdf(avviso_full_path)
+        perizia_tipo, perizia_new_path, perizia_fields = classify_and_rename_pdf(perizia_full_path)
+        avviso_tipo, avviso_new_path, avviso_fields = classify_and_rename_pdf(avviso_full_path)
 
-    post_updates = {}
+        post_updates = {}
 
-    if perizia_new_path.exists():
-        post_updates["perizia_file_path"] = str(perizia_new_path.relative_to(project_root))
+        if perizia_new_path.exists():
+            post_updates["perizia_file_path"] = str(perizia_new_path.relative_to(project_root))
 
-    if avviso_new_path.exists():
-        post_updates["avviso_file_path"] = str(avviso_new_path.relative_to(project_root))
+        if avviso_new_path.exists():
+            post_updates["avviso_file_path"] = str(avviso_new_path.relative_to(project_root))
 
-    # Integra solo i dati mancanti dell’asta con quelli letti dai PDF
-    merged_fields = {}
-    for key in ("tribunale", "rge", "lotto"):
-        current_value = getattr(asta, key, None)
-        candidate_value = (
-            perizia_fields.get(key)
-            or avviso_fields.get(key)
-        )
-        if (not current_value) and candidate_value:
-            merged_fields[key] = candidate_value
+        merged_fields = {}
+        for key in ("tribunale", "rge", "lotto"):
+            current_value = getattr(asta, key, None)
+            candidate_value = (
+                perizia_fields.get(key)
+                or avviso_fields.get(key)
+            )
+            if (not current_value) and candidate_value:
+                merged_fields[key] = candidate_value
 
-    if merged_fields:
-        post_updates.update(merged_fields)
+        if merged_fields:
+            post_updates.update(merged_fields)
 
-    if post_updates:
-        update_asta_fields(asta_id, **post_updates)
+        if post_updates:
+            update_asta_fields(asta_id, **post_updates)
+    except Exception as e:
+        logger.exception("Errore post-processing dopo copia PDF per asta %s", asta_id)
+        return False, f"PDF copiati nel progetto ma errore successivo durante classificazione/aggiornamento: {e}"
 
     imported_names = [
         f"Perizia: {Path(post_updates.get('perizia_file_path', perizia_rel_path)).name}",

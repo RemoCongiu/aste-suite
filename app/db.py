@@ -1,5 +1,6 @@
+import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlmodel import Field, SQLModel, Session, create_engine, select
@@ -70,11 +71,43 @@ class Asta(SQLModel, table=True):
     ai_model: Optional[str] = Field(default=None)
     ai_result_json: Optional[str] = Field(default=None)
     ai_summary: Optional[str] = Field(default=None)
+    ai_prompt_text: Optional[str] = Field(default=None)
+    ai_raw_response: Optional[str] = Field(default=None)
+    avviso_parsed_json: Optional[str] = Field(default=None)
+    perizia_parsed_json: Optional[str] = Field(default=None)
     ai_checked_at: Optional[datetime] = Field(default=None)
     ai_error: Optional[str] = Field(default=None)
 
 
 engine = create_engine("sqlite:///aste.db")
+
+
+def _normalize_db_field_value(value: Any) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            joined = ", ".join(item.strip() for item in value if item and item.strip())
+            return joined or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"nd", "n.d.", "null", "none", "-"}:
+            return None
+        return normalized
+
+    return str(value).strip() or None
 
 
 def _ensure_extra_columns() -> None:
@@ -90,6 +123,10 @@ def _ensure_extra_columns() -> None:
             "categoria_catastale": "ALTER TABLE asta ADD COLUMN categoria_catastale VARCHAR",
             "rilancio_minimo": "ALTER TABLE asta ADD COLUMN rilancio_minimo VARCHAR",
             "descrizione_immobile": "ALTER TABLE asta ADD COLUMN descrizione_immobile VARCHAR",
+            "ai_prompt_text": "ALTER TABLE asta ADD COLUMN ai_prompt_text VARCHAR",
+            "ai_raw_response": "ALTER TABLE asta ADD COLUMN ai_raw_response VARCHAR",
+            "avviso_parsed_json": "ALTER TABLE asta ADD COLUMN avviso_parsed_json VARCHAR",
+            "perizia_parsed_json": "ALTER TABLE asta ADD COLUMN perizia_parsed_json VARCHAR",
         }
 
         for col_name, sql in extra_columns.items():
@@ -151,7 +188,7 @@ def update_asta_fields(asta_id: int, **fields) -> Optional[Asta]:
 
         for k, v in fields.items():
             if hasattr(asta, k):
-                setattr(asta, k, v)
+                setattr(asta, k, _normalize_db_field_value(v))
 
         session.add(asta)
         session.commit()
