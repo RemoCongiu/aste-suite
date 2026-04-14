@@ -84,7 +84,6 @@ def render_asta_detail(asta) -> str:
                 <div class="label">Rilancio minimo</div><div><span class="highlight">{e(asta.rilancio_minimo) or "-"}</span></div>
                 <div class="label">Occupazione</div><div>{render_text(asta.occupazione)}</div>
                 <div class="label">Creditore procedente</div><div>{e(asta.creditore_procedente) or "-"}</div>
-                <div class="label">Debiti condominiali</div><div>{e(asta.debiti_condominiali) or "-"}</div>
                 <div class="label">Proprietario</div><div>{e(asta.proprietario) or "-"}</div>
               </div>
             </div>

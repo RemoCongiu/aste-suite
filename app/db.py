@@ -149,6 +149,34 @@ def _normalize_db_field_value(value: Any, field_name: str | None = None) -> Any:
     return str(value).strip() or None
 
 
+def _normalize_db_field_value(value: Any) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            joined = ", ".join(item.strip() for item in value if item and item.strip())
+            return joined or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"nd", "n.d.", "null", "none", "-"}:
+            return None
+        return normalized
+
+    return str(value).strip() or None
+
+
 def _ensure_extra_columns() -> None:
     with engine.begin() as conn:
         existing_columns = {
@@ -162,7 +190,6 @@ def _ensure_extra_columns() -> None:
             "categoria_catastale": "ALTER TABLE asta ADD COLUMN categoria_catastale VARCHAR",
             "rilancio_minimo": "ALTER TABLE asta ADD COLUMN rilancio_minimo VARCHAR",
             "descrizione_immobile": "ALTER TABLE asta ADD COLUMN descrizione_immobile VARCHAR",
-            "debiti_condominiali": "ALTER TABLE asta ADD COLUMN debiti_condominiali VARCHAR",
             "ai_prompt_text": "ALTER TABLE asta ADD COLUMN ai_prompt_text VARCHAR",
             "ai_raw_response": "ALTER TABLE asta ADD COLUMN ai_raw_response VARCHAR",
             "avviso_parsed_json": "ALTER TABLE asta ADD COLUMN avviso_parsed_json VARCHAR",
@@ -228,7 +255,7 @@ def update_asta_fields(asta_id: int, **fields) -> Optional[Asta]:
 
         for k, v in fields.items():
             if hasattr(asta, k):
-                setattr(asta, k, _normalize_db_field_value(v, k))
+                setattr(asta, k, _normalize_db_field_value(v))
 
         session.add(asta)
         session.commit()

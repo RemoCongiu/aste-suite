@@ -7,10 +7,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from app.ai_analyzer import AIAnalyzerError, MODEL_NAME, analyze_perizia_text_debug
+from app.ai_analyzer import MODEL_NAME, analyze_perizia_text
 from app.db import get_asta, update_asta_fields
 from app.ocr_text import extract_text_from_pdf_ocr
-from app.services_ai_input import prepare_avviso_text_for_ai, prepare_perizia_text_for_ai
 from app.services_parsing import (
     clean_text_block,
     clean_tribunale_name,
@@ -601,7 +600,8 @@ def _build_pregiudizievoli_final(ai_data: dict, perizia_struct: dict, current_db
 def _build_descrizione_final(ai_data: dict, perizia_struct: dict, avviso_fields: dict, current_db_value) -> str | None:
     parts = [
         ai_data.get("descrizione_immobile"),
-        _norm_multiline(((ai_data.get("analisi_qualitativa") or {}).get("descrizione_immobile") or {}).get("analisi_professionale")),
+        avviso_fields.get("descrizione_immobile"),
+        current_db_value,
     ]
     best = _first_non_empty(*parts)
     return _norm_multiline(best)
@@ -649,7 +649,7 @@ def _collect_ai_objective_warnings(ai_data: dict) -> list[str]:
     return warnings
 
 
-def _build_ai_analysis_input(perizia_text: str, avviso_text: str, asta, avviso_fields: dict) -> str:
+def _build_ai_analysis_input(perizia_text: str, asta, avviso_fields: dict) -> str:
     context = {
         "pagina_o_db": {
             "tribunale": getattr(asta, "tribunale", None),
@@ -664,17 +664,12 @@ def _build_ai_analysis_input(perizia_text: str, avviso_text: str, asta, avviso_f
         },
         "avviso_parser": avviso_fields or {},
     }
-
-    cleaned_avviso = prepare_avviso_text_for_ai(avviso_text)
-    cleaned_perizia = prepare_perizia_text_for_ai(perizia_text)
     return (
         "CONTESTO STRUTTURATO AGGIUNTIVO (usa questo blocco per consolidare i campi oggettivi, "
         "risolvere conflitti tra fonti e scegliere il valore piu' attendibile):\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
-        "AVVISO PULITO:\n"
-        f"{cleaned_avviso or '[non disponibile]'}\n\n"
         "TESTO PERIZIA PULITO:\n"
-        f"{cleaned_perizia}"
+        f"{perizia_text}"
     )
 
 
@@ -758,42 +753,6 @@ def _build_note_operativi(ai_data: dict, asta, prezzo_base, offerta_minima, rila
     formalita_commento = _norm_multiline(ai_data.get("formalita_pregiudizievoli_commento"))
     if formalita_commento:
         blocks.append("Commento formalità pregiudizievoli:\n" + formalita_commento)
-
-    fatto_documentale = _norm_multiline(ai_data.get("fatto_documentale"))
-    if fatto_documentale:
-        blocks.append("Fatto documentale:\n" + fatto_documentale)
-
-    interpretazione_operativa = _norm_multiline(ai_data.get("interpretazione_operativa"))
-    if interpretazione_operativa:
-        blocks.append("Interpretazione operativa:\n" + interpretazione_operativa)
-
-    livello_rischio = _norm_text(ai_data.get("livello_rischio"))
-    if livello_rischio:
-        blocks.append(f"Livello rischio: {livello_rischio}")
-
-    azione_consigliata = _norm_multiline(ai_data.get("azione_consigliata"))
-    if azione_consigliata:
-        blocks.append("Azione consigliata:\n" + azione_consigliata)
-
-    punti_forti = _ensure_list(ai_data.get("punti_forti_operazione"))
-    if punti_forti:
-        blocks.append("Punti forti operazione:\n" + _join_bullets(punti_forti))
-
-    punti_deboli = _ensure_list(ai_data.get("punti_deboli_operazione"))
-    if punti_deboli:
-        blocks.append("Punti deboli operazione:\n" + _join_bullets(punti_deboli))
-
-    verifiche_prioritarie = _ensure_list(ai_data.get("verifiche_prioritarie"))
-    if verifiche_prioritarie:
-        blocks.append("Verifiche prioritarie:\n" + _join_bullets(verifiche_prioritarie))
-
-    giudizio_finale = _norm_multiline(ai_data.get("giudizio_finale"))
-    if giudizio_finale:
-        blocks.append("Giudizio finale:\n" + giudizio_finale)
-
-    azione_consigliata_finale = _norm_multiline(ai_data.get("azione_consigliata_finale"))
-    if azione_consigliata_finale:
-        blocks.append("Azione consigliata finale:\n" + azione_consigliata_finale)
 
     if prezzo_base or offerta_minima or rilancio_minimo:
         economic_block = []
@@ -1012,33 +971,10 @@ def analyze_perizia_for_asta(asta_id: int):
         error=None,
     )
 
-    ai_input_text = _build_ai_analysis_input(perizia_text, avviso_text, asta, avviso_fields)
-    try:
-        result = analyze_perizia_text_debug(ai_input_text)
-    except AIAnalyzerError as e:
-        update_asta_fields(
-            asta_id,
-            ai_status="error",
-            ai_error=str(e),
-            ai_prompt_text=json.dumps(e.prompt, ensure_ascii=False, indent=2) if e.prompt else None,
-            ai_raw_response=e.raw_response,
-        )
-        set_analysis_job(
-            asta_id,
-            progress=100,
-            step="errore",
-            message="Errore analisi AI",
-            done=True,
-            error=str(e),
-        )
-        raise
-
-    if not isinstance(result, dict) or not isinstance(result.get("data"), dict):
-        raise RuntimeError("Risultato AI privo di payload 'data'.")
-
-    ai_data = result["data"]
-    ai_prompt_data = result.get("prompt")
-    ai_raw_response = result.get("raw_response")
+    result = analyze_perizia_text_debug(perizia_text)
+    ai_data = result.get("data", {}) if isinstance(result, dict) else {}
+    ai_prompt_data = result.get("prompt") if isinstance(result, dict) else None
+    ai_raw_response = result.get("raw_response") if isinstance(result, dict) else None
 
     # -------------------------
     # FUSIONE DATI
@@ -1049,7 +985,6 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_tribunale = clean_tribunale_name(
         _prefer_sources_then_existing(
-            _get_ai_objective_value(ai_data, "tribunale"),
             perizia_struct.get("tribunale"),
             ai_data.get("tribunale"),
             avviso_fields.get("tribunale"),
@@ -1058,7 +993,6 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_rge = _prefer_sources_then_existing(
-        _get_ai_objective_value(ai_data, "rge"),
         perizia_struct.get("rge"),
         ai_data.get("rge"),
         avviso_fields.get("rge"),
@@ -1066,7 +1000,6 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_lotto = _prefer_sources_then_existing(
-        _get_ai_objective_value(ai_data, "lotto"),
         perizia_struct.get("lotto"),
         ai_data.get("lotto"),
         avviso_fields.get("lotto"),
@@ -1075,7 +1008,6 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_data_asta = normalize_date_string(
         _prefer_sources_then_existing(
-            _get_ai_objective_value(ai_data, "data_asta"),
             ai_data.get("data_asta"),
             avviso_fields.get("data_asta"),
             getattr(asta, "data_asta", None),
@@ -1083,7 +1015,6 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_citta = _prefer_sources_then_existing(
-        _get_ai_objective_value(ai_data, "comune"),
         perizia_struct.get("citta"),
         ai_data.get("citta"),
         avviso_fields.get("citta"),
@@ -1091,7 +1022,6 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_indirizzo = _prefer_sources_then_existing(
-        _get_ai_objective_value(ai_data, "indirizzo"),
         perizia_struct.get("indirizzo"),
         ai_data.get("indirizzo"),
         avviso_fields.get("indirizzo"),
@@ -1100,7 +1030,6 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_prezzo_base = normalize_money_string(
         _prefer_sources_then_existing(
-            _get_ai_objective_value(ai_data, "prezzo_base"),
             perizia_struct.get("prezzo_base"),
             ai_data.get("prezzo_base"),
             avviso_fields.get("prezzo_base"),
@@ -1110,7 +1039,6 @@ def analyze_perizia_for_asta(asta_id: int):
 
     final_offerta_minima = normalize_money_string(
         _prefer_sources_then_existing(
-            _get_ai_objective_value(ai_data, "offerta_minima"),
             ai_data.get("offerta_minima"),
             avviso_fields.get("offerta_minima"),
             getattr(asta, "offerta_minima", None),
@@ -1205,7 +1133,6 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     final_sintesi = _prefer_sources_then_existing(
-        ((ai_data.get("giudizio_investitore") or {}).get("giudizio_finale")),
         ai_data.get("interpretazione_operativa"),
         ai_data.get("sintesi"),
         ai_data.get("riassunto_breve"),
@@ -1249,10 +1176,6 @@ def analyze_perizia_for_asta(asta_id: int):
         "ai_result_json": json.dumps(ai_data, ensure_ascii=False, indent=2),
         "ai_summary": _first_non_empty(ai_data.get("riassunto_breve"), ai_data.get("sintesi")),
         "ai_model": MODEL_NAME,
-        "ai_prompt_text": json.dumps(ai_prompt_data, ensure_ascii=False, indent=2) if ai_prompt_data else None,
-        "ai_raw_response": ai_raw_response,
-        "avviso_parsed_json": json.dumps(avviso_fields, ensure_ascii=False, indent=2) if avviso_fields else None,
-        "perizia_parsed_json": json.dumps(perizia_struct, ensure_ascii=False, indent=2) if perizia_struct else None,
         "perizia_status": f"text_extracted:{perizia_source}" if perizia_source else "text_extracted",
         "perizia_error": None,
 
