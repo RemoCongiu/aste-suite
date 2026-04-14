@@ -5,6 +5,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from app.ocr_text import extract_text_from_pdf_ocr
+from app.pdf_text import extract_text_from_pdf, extract_text_with_diagnostics
+
+# =========================================================
+# NORMALIZZAZIONE BASE
+# =========================================================
 
 # =========================================================
 # NORMALIZZAZIONE BASE
@@ -121,9 +127,6 @@ def normalize_subalterni(value: str | None) -> str | None:
 
 def read_pdf_text_with_fallback(pdf_path: str | Path) -> str:
     pdf_path = Path(pdf_path)
-    from app.ocr_text import extract_text_from_pdf_ocr
-    from app.pdf_text import extract_text_from_pdf, extract_text_with_diagnostics
-
     diag = extract_text_with_diagnostics(pdf_path)
     text = (diag.get("text") or "").strip() if isinstance(diag, dict) else ""
     quality = diag.get("quality") if isinstance(diag, dict) else None

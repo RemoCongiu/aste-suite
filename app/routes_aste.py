@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from app.db import get_asta, get_or_create_asta, update_asta_fields
+from app.db import get_asta, get_or_create_asta, list_aste, update_asta_fields
+from app.excel_export import build_excel_export
 from app.export_utils import (
     build_asta_detail_text,
     build_avviso_debug_txt,
@@ -54,6 +55,18 @@ def _run_analysis_pipeline_async(asta_id: int):
         analyze_perizia_for_asta(asta_id)
 
         rename_asta_documents_from_db(asta_id, get_asta, update_asta_fields)
+
+        set_analysis_job(
+            asta_id,
+            progress=92,
+            step="excel_export",
+            message="Aggiornamento file Excel",
+            done=False,
+            error=None,
+        )
+
+        excel_output_path = PROJECT_ROOT / "data" / "export_aste.xlsx"
+        build_excel_export(list_aste(limit=10000), output_path=excel_output_path)
 
         set_analysis_job(
             asta_id,
@@ -365,11 +378,6 @@ def start_import_recent_pdfs_endpoint(asta_id: int):
     if not asta:
         raise HTTPException(status_code=404, detail="Asta non trovata")
 
-    current_job = get_analysis_job(asta_id)
-    if not current_job.get("done") and current_job.get("step") not in {"idle", "errore"}:
-        logger.warning("Richiesta duplicata start-import-recent-pdfs per asta %s: %s", asta_id, current_job)
-        return {"ok": True, "message": "Import+analisi già in corso", "job": current_job}
-
     set_analysis_job(
         asta_id,
         progress=5,
@@ -379,7 +387,6 @@ def start_import_recent_pdfs_endpoint(asta_id: int):
         error=None,
     )
 
-    logger.info("Avvio thread import PDF recenti per asta %s", asta_id)
     threading.Thread(target=_run_import_pipeline_async, args=(asta_id,), daemon=True).start()
     return {"ok": True, "message": "Import+analisi avviati in background"}
 
