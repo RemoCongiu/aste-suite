@@ -842,6 +842,11 @@ def analyze_perizia_for_asta(asta_id: int):
     )
 
     project_root = Path(__file__).resolve().parents[1]
+    pipeline_start = time.perf_counter()
+    phase_timings_ms: dict[str, float] = {}
+
+    def _phase_done(phase_name: str, started_at: float) -> None:
+        phase_timings_ms[phase_name] = round((time.perf_counter() - started_at) * 1000, 1)
 
     avviso_text = ""
     perizia_text = ""
@@ -853,6 +858,7 @@ def analyze_perizia_for_asta(asta_id: int):
     # -------------------------
     # AVVISO
     # -------------------------
+    docs_read_start = time.perf_counter()
     if getattr(asta, "avviso_file_path", None):
         set_analysis_job(
             asta_id,
@@ -866,8 +872,6 @@ def analyze_perizia_for_asta(asta_id: int):
         avviso_pdf_path = project_root / asta.avviso_file_path
         if avviso_pdf_path.exists():
             avviso_text, avviso_source, _ = _read_pdf_text_with_fallback(avviso_pdf_path)
-            if avviso_text.strip():
-                avviso_fields = extract_avviso_fields_from_text(avviso_text)
 
     # -------------------------
     # PERIZIA
@@ -919,6 +923,7 @@ def analyze_perizia_for_asta(asta_id: int):
         raise RuntimeError(f"File perizia non trovato: {perizia_pdf_path}")
 
     perizia_text, perizia_source, perizia_diag = _read_pdf_text_with_fallback(perizia_pdf_path)
+    _phase_done("lettura_documenti", docs_read_start)
 
     if not perizia_text.strip():
         ocr_error = None
@@ -957,7 +962,11 @@ def analyze_perizia_for_asta(asta_id: int):
         error=None,
     )
 
+    parse_start = time.perf_counter()
+    if avviso_text.strip():
+        avviso_fields = extract_avviso_fields_from_text(avviso_text)
     perizia_struct = _extract_structured_fields_from_perizia_text(perizia_text)
+    _phase_done("estrazione_parsing_documenti", parse_start)
 
     # -------------------------
     # AI
@@ -979,6 +988,7 @@ def analyze_perizia_for_asta(asta_id: int):
     # -------------------------
     # FUSIONE DATI
     # -------------------------
+    merge_start = time.perf_counter()
     # Regola:
     # - pagina/db > avviso > altro per data/prezzo/offerta/rilancio
     # - perizia/ai > tutto il resto per valore_perizia, descrizione, urbanistica, catasto, pregiudizievoli
@@ -1209,6 +1219,7 @@ def analyze_perizia_for_asta(asta_id: int):
         "sintesi": _norm_multiline(final_sintesi),
         "note_operativi": _norm_multiline(final_note_operativi),
     }
+    _phase_done("merge_normalizzazione", merge_start)
 
     # aggiorna note solo se vuote
     existing_note = _norm_multiline(getattr(asta, "note", None))
@@ -1236,7 +1247,13 @@ def analyze_perizia_for_asta(asta_id: int):
         error=None,
     )
 
+    db_persist_start = time.perf_counter()
     update_asta_fields(asta_id, **update_fields)
+    _phase_done("persistenza_db", db_persist_start)
+
+    # presenti per uniformità di report; non eseguiti in questo flusso.
+    phase_timings_ms["geocoding_poi"] = 0.0
+    phase_timings_ms["export_finale"] = 0.0
 
     set_analysis_job(
         asta_id,
@@ -1245,6 +1262,22 @@ def analyze_perizia_for_asta(asta_id: int):
         message="Analisi completata",
         done=True,
         error=None,
+    )
+
+    total_ms = round((time.perf_counter() - pipeline_start) * 1000, 1)
+    logger.info(
+        "Analisi asta %s - timing(ms): lettura_documenti=%s | estrazione_parsing_documenti=%s | "
+        "chiamata_ai=%s | merge_normalizzazione=%s | persistenza_db=%s | geocoding_poi=%s | "
+        "export_finale=%s | totale_pipeline=%s",
+        asta_id,
+        phase_timings_ms.get("lettura_documenti"),
+        phase_timings_ms.get("estrazione_parsing_documenti"),
+        phase_timings_ms.get("chiamata_ai"),
+        phase_timings_ms.get("merge_normalizzazione"),
+        phase_timings_ms.get("persistenza_db"),
+        phase_timings_ms.get("geocoding_poi"),
+        phase_timings_ms.get("export_finale"),
+        total_ms,
     )
 
     return ai_data
