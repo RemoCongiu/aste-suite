@@ -1,5 +1,6 @@
+import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlmodel import Field, SQLModel, Session, create_engine, select
@@ -35,6 +36,7 @@ class Asta(SQLModel, table=True):
 
     # altri dati
     creditore_procedente: Optional[str] = Field(default=None)
+    debiti_condominiali: Optional[str] = Field(default=None)
     descrizione_immobile: Optional[str] = Field(default=None)
 
     # criticità
@@ -70,11 +72,81 @@ class Asta(SQLModel, table=True):
     ai_model: Optional[str] = Field(default=None)
     ai_result_json: Optional[str] = Field(default=None)
     ai_summary: Optional[str] = Field(default=None)
+    ai_prompt_text: Optional[str] = Field(default=None)
+    ai_raw_response: Optional[str] = Field(default=None)
+    avviso_parsed_json: Optional[str] = Field(default=None)
+    perizia_parsed_json: Optional[str] = Field(default=None)
     ai_checked_at: Optional[datetime] = Field(default=None)
     ai_error: Optional[str] = Field(default=None)
 
 
 engine = create_engine("sqlite:///aste.db")
+
+TEXTUAL_NARRATIVE_FIELDS = {
+    "pregiudizievoli",
+    "abusi",
+    "note_operativi",
+    "descrizione_immobile",
+    "sintesi",
+    "note",
+}
+
+
+def _stringify_complex_for_text(value: Any) -> str | None:
+    if isinstance(value, dict):
+        ordered = [f"{k}: {v}" for k, v in value.items() if v is not None and str(v).strip()]
+        return " | ".join(ordered) if ordered else None
+
+    if isinstance(value, list):
+        rendered_items = []
+        for item in value:
+            if isinstance(item, dict):
+                item_text = _stringify_complex_for_text(item)
+            else:
+                item_text = str(item).strip() if item is not None else ""
+            if item_text:
+                rendered_items.append(item_text)
+        return "\n".join(f"- {x}" for x in rendered_items) if rendered_items else None
+
+    return str(value).strip() if value is not None else None
+
+
+def _normalize_db_field_value(value: Any, field_name: str | None = None) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if field_name and field_name.endswith("_json"):
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if field_name in TEXTUAL_NARRATIVE_FIELDS and isinstance(value, (dict, list)):
+        text_value = _stringify_complex_for_text(value)
+        return text_value or None
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            joined = ", ".join(item.strip() for item in value if item and item.strip())
+            return joined or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"nd", "n.d.", "null", "none", "-"}:
+            return None
+        return normalized
+
+    return str(value).strip() or None
 
 
 def _ensure_extra_columns() -> None:
@@ -90,6 +162,11 @@ def _ensure_extra_columns() -> None:
             "categoria_catastale": "ALTER TABLE asta ADD COLUMN categoria_catastale VARCHAR",
             "rilancio_minimo": "ALTER TABLE asta ADD COLUMN rilancio_minimo VARCHAR",
             "descrizione_immobile": "ALTER TABLE asta ADD COLUMN descrizione_immobile VARCHAR",
+            "debiti_condominiali": "ALTER TABLE asta ADD COLUMN debiti_condominiali VARCHAR",
+            "ai_prompt_text": "ALTER TABLE asta ADD COLUMN ai_prompt_text VARCHAR",
+            "ai_raw_response": "ALTER TABLE asta ADD COLUMN ai_raw_response VARCHAR",
+            "avviso_parsed_json": "ALTER TABLE asta ADD COLUMN avviso_parsed_json VARCHAR",
+            "perizia_parsed_json": "ALTER TABLE asta ADD COLUMN perizia_parsed_json VARCHAR",
         }
 
         for col_name, sql in extra_columns.items():
@@ -151,7 +228,7 @@ def update_asta_fields(asta_id: int, **fields) -> Optional[Asta]:
 
         for k, v in fields.items():
             if hasattr(asta, k):
-                setattr(asta, k, v)
+                setattr(asta, k, _normalize_db_field_value(v, k))
 
         session.add(asta)
         session.commit()
