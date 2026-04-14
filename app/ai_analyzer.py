@@ -318,6 +318,7 @@ REGOLE SPECIFICHE IMPORTANTI
 - Se non trovi criticità, non inventarle.
 - "criticita_principali" deve contenere solo i punti davvero rilevanti.
 - "costi_probabili" deve contenere costi o esborsi probabili ricavabili dal testo.
+- "debiti_condominiali" è un campo separato: non inserirlo dentro "abusi" o dentro costi di regolarizzazione edilizia/urbanistica.
 - "punti_di_attenzione_investitore" deve essere pratico e concreto.
 - "valutazione_operativa" e "strategia_consigliata" devono essere utili per decidere se approfondire o meno.
 

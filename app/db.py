@@ -36,6 +36,7 @@ class Asta(SQLModel, table=True):
 
     # altri dati
     creditore_procedente: Optional[str] = Field(default=None)
+    debiti_condominiali: Optional[str] = Field(default=None)
     descrizione_immobile: Optional[str] = Field(default=None)
 
     # criticità
@@ -80,6 +81,72 @@ class Asta(SQLModel, table=True):
 
 
 engine = create_engine("sqlite:///aste.db")
+
+TEXTUAL_NARRATIVE_FIELDS = {
+    "pregiudizievoli",
+    "abusi",
+    "note_operativi",
+    "descrizione_immobile",
+    "sintesi",
+    "note",
+}
+
+
+def _stringify_complex_for_text(value: Any) -> str | None:
+    if isinstance(value, dict):
+        ordered = [f"{k}: {v}" for k, v in value.items() if v is not None and str(v).strip()]
+        return " | ".join(ordered) if ordered else None
+
+    if isinstance(value, list):
+        rendered_items = []
+        for item in value:
+            if isinstance(item, dict):
+                item_text = _stringify_complex_for_text(item)
+            else:
+                item_text = str(item).strip() if item is not None else ""
+            if item_text:
+                rendered_items.append(item_text)
+        return "\n".join(f"- {x}" for x in rendered_items) if rendered_items else None
+
+    return str(value).strip() if value is not None else None
+
+
+def _normalize_db_field_value(value: Any, field_name: str | None = None) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if field_name and field_name.endswith("_json"):
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if field_name in TEXTUAL_NARRATIVE_FIELDS and isinstance(value, (dict, list)):
+        text_value = _stringify_complex_for_text(value)
+        return text_value or None
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            joined = ", ".join(item.strip() for item in value if item and item.strip())
+            return joined or None
+        return json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized.lower() in {"nd", "n.d.", "null", "none", "-"}:
+            return None
+        return normalized
+
+    return str(value).strip() or None
 
 
 def _normalize_db_field_value(value: Any) -> Any:

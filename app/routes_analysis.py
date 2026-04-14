@@ -1201,6 +1201,7 @@ def analyze_perizia_for_asta(asta_id: int):
 
         "proprietario": _norm_text(final_proprietario),
         "creditore_procedente": _norm_text(final_creditore),
+        "debiti_condominiali": _norm_text(ai_data.get("debiti_condominiali")),
 
         "descrizione_immobile": _norm_multiline(final_descrizione),
         "pregiudizievoli": _norm_multiline(final_pregiudizievoli),
